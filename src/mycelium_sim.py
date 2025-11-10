@@ -22,7 +22,7 @@ D = 3.456*1.2               # mm/day, internal substrate diffusion coeff
 M_cap = 2e-6            # mol/mm, max conc per mm
 initial_tips = 25
 Omega0 = 5e-6           # total initial internal substrate (mol)
-T_steps = 50           # number of steps for demo
+T_steps = 25           # number of steps for demo
 
 INOCULUM_POINTS = [
     [0.0, 0.0, 0.0],   # UP
@@ -31,8 +31,13 @@ INOCULUM_POINTS = [
 
 # geometric & numerical tolerances
 ANASTOMOSIS_TOL = 1e-3  # mm, tolerance to detect intersection (very small)
-SNAPSHOT_DIR = "snapshots"
+
+# Save outputs under results/
+RESULTS_DIR = "results"
+SNAPSHOT_DIR = os.path.join(RESULTS_DIR, "snapshots")
+
 os.makedirs(SNAPSHOT_DIR, exist_ok=True)
+
 
 # -------------------------
 # Basic geometry helpers
@@ -639,7 +644,7 @@ def run_demo():
 
     # --- After simulation ---
     df = pd.DataFrame(history)
-    df.to_csv("mycelium_growth_stats.csv", index=False)
+    df.to_csv(os.path.join(RESULTS_DIR, "mycelium_growth_stats.csv"), index=False)
     print("\nSaved growth statistics to mycelium_growth_stats.csv")
 
     plot_growth_summary(df)
@@ -665,7 +670,7 @@ def plot_growth_summary(df):
     axes[2].legend()
 
     plt.tight_layout()
-    plt.savefig("mycelium_growth_summary.png", dpi=150)
+    plt.savefig(os.path.join(RESULTS_DIR, "mycelium_growth_summary.png"), dpi=150)
     plt.show()
 
 if __name__ == "__main__":
