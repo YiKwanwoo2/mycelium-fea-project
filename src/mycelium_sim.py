@@ -18,19 +18,19 @@ dt = 0.01               # days, time step
 lambda_angle = math.pi/6  # max angular variation for new segment
 P_branch = 0.5          # branching probability
 c_g = 1e-7              # mol/mm, cost-of-growth per mm
-D = 3.456*1.2               # mm/day, internal substrate diffusion coeff
+D = 3.456               # mm/day, internal substrate diffusion coeff
 M_cap = 2e-6            # mol/mm, max conc per mm
 initial_tips = 25
-Omega0 = 5e-6           # total initial internal substrate (mol)
-T_steps = 25           # number of steps for demo
+Omega0 = 5e-6 #5e-6           # total initial internal substrate (mol)
+T_steps = 150           # number of steps for demo
 
 INOCULUM_POINTS = [
-    [0.0, 0.0, 0.0],   # UP
-    # [0.0, -0.9, 0.0],   # DOWN
+    [0.0, 1.0, 0.0],   # UP
+    [0.0, -1.0, 0.0],   # DOWN
 ]
 
 # geometric & numerical tolerances
-ANASTOMOSIS_TOL = 1e-3  # mm, tolerance to detect intersection (very small)
+ANASTOMOSIS_TOL = 1e-3 #1e-3  # mm, tolerance to detect intersection (very small)
 
 # Save outputs under results/
 RESULTS_DIR = "results"
@@ -595,30 +595,30 @@ def run_demo():
 
     # substrate & walls as before
     cuboids.append(Cuboid(center=[0.0, 0.0, 0.0],
-                          size=[2.0, 2.0, 0.1],
+                          size=[5.0, 2.0, 0.1],
                           ctype='substrate',
                           attrs={'E': 2e-6, 'mu': 1e8}))
     wall_thickness = 0.05
-    dish_size = 2.0
-    height = 0.2
+    dish_size = 5.0
+    height = 0.1
     cuboids += [
-        Cuboid(center=[-(dish_size/2 + wall_thickness/2), 0, 0],
-               size=[wall_thickness, dish_size*1.1, height*1.1],
-               ctype='impenetrable'),
-        Cuboid(center=[(dish_size/2 + wall_thickness/2), 0, 0],
-               size=[wall_thickness, dish_size*1.1, height*1.1],
-               ctype='impenetrable'),
-        Cuboid(center=[0, -(dish_size/2 + wall_thickness/2), 0],
-               size=[dish_size*1.1, wall_thickness, height*1.1],
-               ctype='impenetrable'),
-        Cuboid(center=[0, (dish_size/2 + wall_thickness/2), 0],
-               size=[dish_size*1.1, wall_thickness, height*1.1],
-               ctype='impenetrable'),
+        # Cuboid(center=[-(dish_size/2 + wall_thickness/2), 0, 0],
+        #        size=[wall_thickness, dish_size*1.1, height*1.1],
+        #        ctype='impenetrable'),
+        # Cuboid(center=[(dish_size/2 + wall_thickness/2), 0, 0],
+        #        size=[wall_thickness, dish_size*1.1, height*1.1],
+        #        ctype='impenetrable'),
+        # Cuboid(center=[0, -(dish_size/2 + wall_thickness/2), 0],
+        #        size=[dish_size*1.1, wall_thickness, height*1.1],
+        #        ctype='impenetrable'),
+        # Cuboid(center=[0, (dish_size/2 + wall_thickness/2), 0],
+        #        size=[dish_size*1.1, wall_thickness, height*1.1],
+        #        ctype='impenetrable'),
         Cuboid(center=[0, 0, -height/2 - wall_thickness/2],
-               size=[dish_size*1.1, dish_size*1.1, wall_thickness],
+               size=[dish_size, dish_size, wall_thickness],
                ctype='impenetrable'),
         Cuboid(center=[0, 0, height/2 + wall_thickness/2],
-               size=[dish_size*1.1, dish_size*1.1, wall_thickness],
+               size=[dish_size, dish_size, wall_thickness],
                ctype='impenetrable')
     ]
 
