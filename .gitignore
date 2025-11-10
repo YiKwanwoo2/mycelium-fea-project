@@ -1,0 +1,63 @@
+# ==============================
+# Python cache and build files
+# ==============================
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+build/
+dist/
+
+# ==============================
+# VS Code and IDE settings
+# ==============================
+.vscode/
+.idea/
+*.code-workspace
+
+# ==============================
+# Simulation outputs and results
+# ==============================
+snapshots/
+results/
+*.csv
+*.xlsx
+*.dat
+*.npz
+*.npy
+*.json
+*.log
+*.bak
+
+# ==============================
+# Plots and images
+# ==============================
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.tif
+*.tiff
+*.svg
+
+# ==============================
+# Great Lakes / HPC job files
+# ==============================
+*.slurm
+*.out
+*.err
+
+# ==============================
+# Temporary or system files
+# ==============================
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ==============================
+# Jupyter notebooks auto-saves
+# ==============================
+*.ipynb_checkpoints/
