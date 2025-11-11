@@ -22,7 +22,7 @@ D = 3.456               # mm/day, internal substrate diffusion coeff
 M_cap = 2e-6            # mol/mm, max conc per mm
 initial_tips = 25
 Omega0 = 5e-6 #5e-6           # total initial internal substrate (mol)
-T_steps = 150           # number of steps for demo
+T_steps = 25           # number of steps for demo
 
 INOCULUM_POINTS = [
     [0.0, 1.0, 0.0],   # UP

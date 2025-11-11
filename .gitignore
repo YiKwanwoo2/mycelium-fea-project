@@ -46,7 +46,7 @@ dist/
 # ==============================
 # Great Lakes / HPC job files
 # ==============================
-*.slurm
+# *.slurm
 *.out
 *.err
 
