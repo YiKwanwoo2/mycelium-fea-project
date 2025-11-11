@@ -9,6 +9,7 @@ import random
 import math
 import os
 import pandas as pd
+import datetime
 
 # -------------------------
 # PARAMETERS (defaults come from Ulzurrun et al. 2017 Table 5/3)
@@ -22,7 +23,7 @@ D = 3.456               # mm/day, internal substrate diffusion coeff
 M_cap = 2e-6            # mol/mm, max conc per mm
 initial_tips = 25
 Omega0 = 5e-6 #5e-6           # total initial internal substrate (mol)
-T_steps = 25           # number of steps for demo
+T_steps = 150           # number of steps for demo
 
 INOCULUM_POINTS = [
     [0.0, 1.0, 0.0],   # UP
@@ -649,6 +650,47 @@ def run_demo():
 
     plot_growth_summary(df)
     print("Petri dish demo finished.")
+
+    out_dir = export_geometry(M)
+
+def export_geometry(M, output_root="results"):
+    """
+    Export node and element data for FEA solver.
+    Each segment's start/end are stored as nodes with unique IDs.
+    """
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_dir = os.path.join(output_root, f"sim_{timestamp}")
+    os.makedirs(out_dir, exist_ok=True)
+
+    nodes = []
+    node_map = {}
+    elements = []
+
+    node_counter = 0
+    elem_counter = 0
+
+    def add_node(p):
+        nonlocal node_counter
+        key = tuple(np.round(p, 6))
+        if key not in node_map:
+            node_map[key] = node_counter
+            nodes.append([node_counter, *p])
+            node_counter += 1
+        return node_map[key]
+
+    for _, _, s in M.all_segments():
+        n1 = add_node(s.start)
+        n2 = add_node(s.end)
+        elements.append([elem_counter, n1, n2])
+        elem_counter += 1
+
+    nodes_df = pd.DataFrame(nodes, columns=["node_id", "x", "y", "z"])
+    elems_df = pd.DataFrame(elements, columns=["elem_id", "n1", "n2"])
+
+    nodes_df.to_csv(os.path.join(out_dir, "nodes.csv"), index=False)
+    elems_df.to_csv(os.path.join(out_dir, "elements.csv"), index=False)
+    print(f"✅ Exported geometry to {out_dir}")
+    return out_dir
 
 def plot_growth_summary(df):
     """Plot key growth indicators over time."""
