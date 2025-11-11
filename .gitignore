@@ -21,8 +21,8 @@ dist/
 # ==============================
 # Simulation outputs and results
 # ==============================
-snapshots/
-results/
+# snapshots/
+# results/
 *.csv
 *.xlsx
 *.dat
@@ -35,13 +35,13 @@ results/
 # ==============================
 # Plots and images
 # ==============================
-*.png
-*.jpg
-*.jpeg
-*.gif
-*.tif
-*.tiff
-*.svg
+# *.png
+# *.jpg
+# *.jpeg
+# *.gif
+# *.tif
+# *.tiff
+# *.svg
 
 # ==============================
 # Great Lakes / HPC job files
