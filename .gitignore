@@ -23,14 +23,14 @@ dist/
 # ==============================
 # snapshots/
 # results/
-*.csv
-*.xlsx
-*.dat
-*.npz
-*.npy
-*.json
-*.log
-*.bak
+# *.csv
+# *.xlsx
+# *.dat
+# *.npz
+# *.npy
+# *.json
+# *.log
+# *.bak
 
 # ==============================
 # Plots and images
