@@ -23,15 +23,17 @@ D = 3.456               # mm/day, internal substrate diffusion coeff
 M_cap = 2e-6            # mol/mm, max conc per mm
 initial_tips = 25
 Omega0 = 5e-6 #5e-6           # total initial internal substrate (mol)
-T_steps = 150           # number of steps for demo
+T_steps = 25           # number of steps for demo
+
+dist_inoculum = 0.5  # mm, distance between multiple inoculum points
 
 INOCULUM_POINTS = [
-    [0.0, 1.0, 0.0],   # UP
-    [0.0, -1.0, 0.0],   # DOWN
+    [0.0, dist_inoculum/2, 0.0],   # UP
+    [0.0, -dist_inoculum/2, 0.0],   # DOWN
 ]
 
 # geometric & numerical tolerances
-ANASTOMOSIS_TOL = 1e-3 #1e-3  # mm, tolerance to detect intersection (very small)
+ANASTOMOSIS_TOL = 5e-3 #1e-3  # mm, tolerance to detect intersection (very small)
 
 # Save outputs under results/
 RESULTS_DIR = "results"
@@ -527,7 +529,11 @@ def detect_anastomosis(M, tol=ANASTOMOSIS_TOL):
 # -------------------------
 # Visualization
 # -------------------------
-def plot_mycelium(M, step, cuboids=None, title=None, show=True):
+def plot_mycelium(M, step, cuboids=None, title=None, show=True, snapshot_dir=None):
+    if snapshot_dir is None:
+        snapshot_dir = SNAPSHOT_DIR
+    os.makedirs(snapshot_dir, exist_ok=True)
+
     fig = plt.figure(figsize=(7,7))
     ax = fig.add_subplot(111, projection='3d')
 
@@ -564,7 +570,7 @@ def plot_mycelium(M, step, cuboids=None, title=None, show=True):
         ax.legend(unique.values(), unique.keys())
 
     plt.tight_layout()
-    plt.savefig(os.path.join(SNAPSHOT_DIR, f"petri_step_{step:04d}.png"), dpi=150)
+    plt.savefig(os.path.join(snapshot_dir, f"petri_step_{step:04d}.png"), dpi=150)
     if show:
         plt.show()
     plt.close(fig)
@@ -594,14 +600,16 @@ def run_demo():
     M = initialize_inoculum(points=INOCULUM_POINTS, H0_per_point=10)
     cuboids = []
 
-    # substrate & walls as before
-    cuboids.append(Cuboid(center=[0.0, 0.0, 0.0],
-                          size=[5.0, 2.0, 0.1],
-                          ctype='substrate',
-                          attrs={'E': 2e-6, 'mu': 1e8}))
     wall_thickness = 0.05
     dish_size = 5.0
     height = 0.1
+
+    # substrate & walls as before
+    cuboids.append(Cuboid(center=[0.0, 0.0, 0.0],
+                          size=[dish_size, 2.0, height],
+                          ctype='substrate',
+                          attrs={'E': 2e-6, 'mu': 1e8}))
+
     cuboids += [
         # Cuboid(center=[-(dish_size/2 + wall_thickness/2), 0, 0],
         #        size=[wall_thickness, dish_size*1.1, height*1.1],
@@ -623,6 +631,11 @@ def run_demo():
                ctype='impenetrable')
     ]
 
+    out_dir = os.path.join(RESULTS_DIR, f"sim_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}")
+    os.makedirs(out_dir, exist_ok=True)
+    snapshot_dir = os.path.join(out_dir, "snapshots")
+    os.makedirs(snapshot_dir, exist_ok=True)
+
     # --- NEW: statistics collection ---
     history = []
 
@@ -640,26 +653,23 @@ def run_demo():
 
         if t % 5 == 0 or t == T_steps - 1:
             print(f"Step {t}: {stats}")
-        if t % 5 == 0 or t == T_steps - 1:
-            plot_mycelium(M, t, cuboids=cuboids, title=f"Step {t} (Petri Dish)", show=False)
+            plot_mycelium(M, t, cuboids=cuboids, title=f"Step {t} (Petri Dish)", show=False, snapshot_dir=snapshot_dir)
 
     # --- After simulation ---
     df = pd.DataFrame(history)
-    df.to_csv(os.path.join(RESULTS_DIR, "mycelium_growth_stats.csv"), index=False)
-    print("\nSaved growth statistics to mycelium_growth_stats.csv")
+    df.to_csv(os.path.join(out_dir, "mycelium_growth_stats.csv"), index=False)
+    print(f"\nSaved growth statistics to {out_dir}/mycelium_growth_stats.csv")
 
-    plot_growth_summary(df)
-    print("Petri dish demo finished.")
+    plot_growth_summary(df, out_dir)
+    export_geometry(M, out_dir)
+    print(f"✅ All results saved under {out_dir}")
 
-    out_dir = export_geometry(M)
-
-def export_geometry(M, output_root="results"):
+def export_geometry(M, out_dir):
     """
     Export node and element data for FEA solver.
     Each segment's start/end are stored as nodes with unique IDs.
+    Saves into the provided output directory.
     """
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_dir = os.path.join(output_root, f"sim_{timestamp}")
     os.makedirs(out_dir, exist_ok=True)
 
     nodes = []
@@ -690,9 +700,8 @@ def export_geometry(M, output_root="results"):
     nodes_df.to_csv(os.path.join(out_dir, "nodes.csv"), index=False)
     elems_df.to_csv(os.path.join(out_dir, "elements.csv"), index=False)
     print(f"✅ Exported geometry to {out_dir}")
-    return out_dir
 
-def plot_growth_summary(df):
+def plot_growth_summary(df, out_dir):
     """Plot key growth indicators over time."""
     fig, axes = plt.subplots(3, 1, figsize=(8, 9), sharex=True)
 
@@ -712,8 +721,8 @@ def plot_growth_summary(df):
     axes[2].legend()
 
     plt.tight_layout()
-    plt.savefig(os.path.join(RESULTS_DIR, "mycelium_growth_summary.png"), dpi=150)
-    plt.show()
+    plt.savefig(os.path.join(out_dir, "mycelium_growth_summary.png"), dpi=150)
+    plt.close(fig)
 
 if __name__ == "__main__":
     run_demo()
