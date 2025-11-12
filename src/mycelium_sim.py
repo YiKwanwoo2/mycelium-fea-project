@@ -25,11 +25,11 @@ initial_tips = 25
 Omega0 = 5e-6 #5e-6           # total initial internal substrate (mol)
 T_steps = 25           # number of steps for demo
 
-dist_inoculum = 0.5  # mm, distance between multiple inoculum points
+dist_inoculum = 0.0  # mm, distance between multiple inoculum points
 
 INOCULUM_POINTS = [
-    [0.0, dist_inoculum/2, 0.0],   # UP
-    [0.0, -dist_inoculum/2, 0.0],   # DOWN
+    [0.0, dist_inoculum/2, 0.0]   # UP
+    # [0.0, -dist_inoculum/2, 0.0],   # DOWN
 ]
 
 # geometric & numerical tolerances
