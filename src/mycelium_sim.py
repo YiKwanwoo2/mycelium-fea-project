@@ -11,6 +11,10 @@ import os
 import pandas as pd
 import datetime
 
+SEED = 42   # choose any integer
+random.seed(SEED)
+np.random.seed(SEED)
+
 # -------------------------
 # PARAMETERS (defaults come from Ulzurrun et al. 2017 Table 5/3)
 # -------------------------
@@ -295,46 +299,6 @@ def uptake_from_cuboids(M, cuboids, dt=dt):
                 break
         c.attrs['E'] = E
 
-# ---
-# Slide tips along impenetrable boundaries
-# ---
-# def enforce_impenetrable_boundaries(M, cuboids):
-#     """
-#     Prevent hyphae from growing through impenetrable cuboids.
-#     Instead of stopping growth, the tip slides along the wall surface.
-#     """
-#     for _,_,s in M.tip_segments():
-#         for c in cuboids:
-#             if c.ctype != 'impenetrable':
-#                 continue
-#             if c.contains_point(s.endpoint()):
-#                 # approximate surface normal depending on which side penetrated
-#                 delta = s.end - c.center
-#                 half_size = c.size / 2.0
-#                 normal = np.zeros(3)
-
-#                 # find which face it hit (closest boundary)
-#                 overlap = np.abs(delta) - half_size
-#                 idx = np.argmax(overlap)  # axis of deepest penetration
-#                 normal[idx] = np.sign(delta[idx])
-
-#                 # project direction vector to remove normal component (slide)
-#                 dir_vec = s.end - s.start
-#                 dir_vec = dir_vec / np.linalg.norm(dir_vec)
-#                 dir_vec = dir_vec - np.dot(dir_vec, normal) * normal
-#                 if np.linalg.norm(dir_vec) < 1e-12:
-#                     # fallback: small random tangent if perfectly perpendicular
-#                     dir_vec = np.random.randn(3)
-#                     dir_vec[idx] = 0.0
-#                 dir_vec /= np.linalg.norm(dir_vec)
-
-#                 # reassign new endpoint just outside the wall
-#                 s.end = s.start + dir_vec * s.length()
-#                 s.theta = math.acos(dir_vec[2])
-#                 s.phi = math.atan2(dir_vec[1], dir_vec[0])
-#                 s.state = 'A'  # keep it active
-#                 break
-
 def enforce_impenetrable_boundaries(M, cuboids, max_iter=3):
     """
     Prevent hyphae from growing through impenetrable cuboids.
@@ -456,55 +420,6 @@ def attempt_growth(M, P_branch=P_branch, c_g=c_g, h0=h0):
         M.hyphae.append(nh)
 
     M.rebuild_index()
-
-# def attempt_growth(M, P_branch=P_branch, c_g=c_g, h0=h0):
-#     # For each active tip segment, check if it has enough internal substrate to grow one or two segments
-#     # apical growth consumes c_g*h0 (mol)
-#     new_hypha_segments = []  # tuples (hypha_idx, new Segment) or (new_hypha_newrow, Segment)
-#     for i,h in enumerate(M.hyphae):
-#         if len(h.segments)==0: continue
-#         tip = h.segments[-1]
-#         if tip.state != 'A':
-#             continue
-#         # amount in tip in mol/mm times length => mol (we store I in mol/mm)
-#         available_mol = tip.I * tip.length()
-#         cost_one = c_g * h0
-#         if available_mol >= cost_one:
-#             # decide branching?
-#             do_branch = (random.random() < P_branch) and (available_mol >= 2*cost_one)
-#             if do_branch:
-#                 # two new segments: one continues parent, one becomes new hypha
-#                 # parent continues with one new segment in parent hypha
-#                 # compute parent new direction with noise
-#                 th0, ph0 = rand_direction_from(tip.theta, tip.phi)
-#                 dir_v = sph_to_cart(th0, ph0)
-#                 new_end_parent = tip.endpoint() + dir_v * h0
-#                 new_seg_parent = Segment(tip.endpoint(), new_end_parent, th0, ph0, I=0.0, state='A', age=0)
-#                 # second new hypha
-#                 th1, ph1 = rand_direction_from(tip.theta, tip.phi)
-#                 dir_v2 = sph_to_cart(th1, ph1)
-#                 new_end_child = tip.endpoint() + dir_v2 * h0
-#                 new_seg_child = Segment(tip.endpoint(), new_end_child, th1, ph1, I=0.0, state='A', age=0)
-#                 # update parent tip state to passive
-#                 tip.state = 'P'
-#                 # consume substrate from tip: subtract cost for two segments (converted back to mol/mm distribution)
-#                 # For simplicity subtract from tip.I uniformly as mol/mm across a length = tip.length()
-#                 total_cost = 2*cost_one
-#                 # subtract on mol/mm basis
-#                 tip.I = max(0.0, (available_mol - total_cost) / tip.length())
-#                 # attach parent new seg, and new hypha row with child seg
-#                 h.segments.append(new_seg_parent)
-#                 M.hyphae.append(Hypha([new_seg_child]))
-#             else:
-#                 # simple apical growth: extend the same hypha with one segment
-#                 th0, ph0 = rand_direction_from(tip.theta, tip.phi)
-#                 dir_v = sph_to_cart(th0, ph0)
-#                 new_end = tip.endpoint() + dir_v * h0
-#                 new_seg = Segment(tip.endpoint(), new_end, th0, ph0, I=0.0, state='A', age=0)
-#                 tip.state = 'P'
-#                 tip.I = max(0.0, (available_mol - cost_one) / tip.length())
-#                 h.segments.append(new_seg)
-#     M.rebuild_index()
 
 # -------------------------
 # Simple anastomosis detection: if new endpoint within tol of any existing segment (not its parent),
