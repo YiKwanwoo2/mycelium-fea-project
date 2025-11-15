@@ -421,35 +421,87 @@ def attempt_growth(M, P_branch=P_branch, c_g=c_g, h0=h0):
 
     M.rebuild_index()
 
+# ============================================================
+# Spatial Hash (voxel grid) for accelerating segment queries
+# ============================================================
+class SpatialHash:
+    def __init__(self, voxel_size=0.2):
+        self.voxel_size = float(voxel_size)
+        self.hash = {}  # key: (ix,iy,iz), value: list of (hypha_idx, seg_idx, segment)
+
+    def _voxel_coords(self, p):
+        return (
+            int(p[0] // self.voxel_size),
+            int(p[1] // self.voxel_size),
+            int(p[2] // self.voxel_size)
+        )
+
+    def insert_segment(self, hi, si, seg):
+        # Insert both endpoints (or center) so segment is discoverable
+        p = (seg.start + seg.end) * 0.5
+        key = self._voxel_coords(p)
+        self.hash.setdefault(key, []).append((hi, si, seg))
+
+    def rebuild(self, M):
+        """Recompute all voxel entries from the entire mycelium."""
+        self.hash.clear()
+        for hi, h in enumerate(M.hyphae):
+            for si, seg in enumerate(h.segments):
+                self.insert_segment(hi, si, seg)
+
+    def nearby_segments(self, p):
+        """Return all segments in voxels around point p."""
+        ix, iy, iz = self._voxel_coords(p)
+
+        # 3×3×3 neighboring voxel search
+        for dx in (-1,0,1):
+            for dy in (-1,0,1):
+                for dz in (-1,0,1):
+                    key = (ix+dx, iy+dy, iz+dz)
+                    if key in self.hash:
+                        for entry in self.hash[key]:
+                            yield entry  # (hypha_idx, seg_idx, seg)
+
 # -------------------------
 # Simple anastomosis detection: if new endpoint within tol of any existing segment (not its parent),
 # snap to nearest point and mark it as 'S' (anastomosed)
 # -------------------------
-def detect_anastomosis(M, tol=ANASTOMOSIS_TOL):
-    # For each tip, check proximity to all existing segments except adjacent neighbor
-    for i,h in enumerate(M.hyphae):
-        if len(h.segments)==0: continue
-        tip_idx = len(h.segments)-1
+def detect_anastomosis(M, spatial, tol=ANASTOMOSIS_TOL):
+    """
+    Voxel-accelerated anastomosis detection.
+    Only checks nearby segments instead of *all* segments.
+    """
+    for hi, h in enumerate(M.hyphae):
+        if not h.segments:
+            continue
+
+        tip_idx = len(h.segments) - 1
         tip = h.segments[tip_idx]
         if tip.state != 'A':
             continue
+
         p = tip.endpoint()
-        # search others
         found = False
-        for ii,hh in enumerate(M.hyphae):
-            for jj,s in enumerate(hh.segments):
-                # skip comparing with the tip's parent segment (same hypha, previous index)
-                if ii == i and jj == tip_idx:
-                    continue
-                dist, proj = point_segment_distance(p, s.start, s.end)
-                if dist <= tol:
-                    # snap tip endpoint to proj, set state to anastomosed (S)
-                    tip.end = proj.copy()
-                    tip.state = 'S'
-                    # Optionally connect graphs / record anastomosis adjacency
-                    found = True
-                    break
-            if found: break
+
+        # Query nearby segments (≈O(1) average)
+        for ii, jj, seg in spatial.nearby_segments(p):
+
+            # Skip self & parent segment
+            if ii == hi and jj == tip_idx:
+                continue
+
+            dist, proj = point_segment_distance(p, seg.start, seg.end)
+            if dist <= tol:
+                # Snap endpoint to segment
+                tip.end = proj.copy()
+                tip.state = 'S'
+                found = True
+                break
+
+        # If anastomosis occurred, update spatial hash entry for this tip
+        if found:
+            # Update hash for modified segment
+            spatial.insert_segment(hi, tip_idx, tip)
 
 # -------------------------
 # Visualization
@@ -554,13 +606,17 @@ def run_demo():
     snapshot_dir = os.path.join(out_dir, "snapshots")
     os.makedirs(snapshot_dir, exist_ok=True)
 
+    spatial = SpatialHash(voxel_size=0.1)  # tune voxel size for speed/accuracy
+    spatial.rebuild(M)
+
     # --- NEW: statistics collection ---
     history = []
 
     for t in range(T_steps):
         translocate_internal_substrate(M, D=D, dt=dt)
         attempt_growth(M, P_branch=P_branch, c_g=c_g, h0=h0)
-        detect_anastomosis(M, tol=ANASTOMOSIS_TOL)
+        spatial.rebuild(M)
+        detect_anastomosis(M, spatial, tol=ANASTOMOSIS_TOL)
         uptake_from_cuboids(M, cuboids, dt=dt)
         enforce_impenetrable_boundaries(M, cuboids)
 
