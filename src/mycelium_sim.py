@@ -35,7 +35,7 @@ HEIGHT = 0.1
 H0_PER_POINT = 10
 SUBSTRATE_WIDTH = 2.0  # mm, width of substrate in Y direction
 
-dist_inoculum = 1.0  # mm, distance between multiple inoculum points
+dist_inoculum = 0.5  # mm, distance between multiple inoculum points
 
 INOCULUM_POINTS = [
     [-dist_inoculum, dist_inoculum/2, 0.0],   # UP
@@ -625,7 +625,7 @@ def run_demo():
         stats["step"] = t
         history.append(stats)
 
-        if t % 1 == 0 or t == T_steps - 1:
+        if t % 50 == 0 or t == T_steps - 1:
             print(f"Step {t}: {stats}")
             plot_mycelium(M, t, cuboids=cuboids, title=f"Step {t} (Petri Dish)", show=False, snapshot_dir=snapshot_dir)
 

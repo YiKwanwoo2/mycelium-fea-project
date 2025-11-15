@@ -1,0 +1,1 @@
+Total FEA runtime: 6.074665 seconds

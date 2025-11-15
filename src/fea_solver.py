@@ -2,23 +2,26 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import os
+import time
 
 # ----------------------------
 # Material & Simulation Parameters
 # ----------------------------
-E_mod = 1e6
-A = 1.0
-I = 0.05
+E_mod = 2500  # Young's Modulus in MPa
+d = 0.0002  # mm
+t = 0.000001  # mm
+A = 3.14 * ((d / 2) ** 2 - (d / 2 - t) ** 2) # mm²
+# I = 3.14 * ( (d)**4 - (d - 2*t)**4 ) / 64  # mm^4
+# A = 3.14 * ((d / 2) ** 2) # mm²
+I = A*0.001  # mm^4
 N_STEPS = 40
-DISPLACEMENT_MAX = 0.2  # mm
-
-# Nonlinear stress–strain curves
-axial_strain = np.array([0.0, 0.01, 0.02, 0.04, 0.05])
-axial_stress = np.array([0.0, 2e4, 3.5e4, 4.2e4, 4.25e4])
+DISPLACEMENT_MAX = 2.00  # mm
 
 # Automatically set failure strain
-MAX_STRAIN = axial_strain.max()
-MAX_STRESS = axial_stress.max()
+MAX_STRAIN = 0.018
+MAX_STRESS = E_mod * MAX_STRAIN
+
+GRIP_LENGTH = 0.5  # mm
 
 # ----------------------------
 # Helpers
@@ -48,11 +51,62 @@ def bar_stiffness(p1, p2, E=E_mod, A=A, I=I):
     ])
     return k_ax + k_bend, L
 
+# ----------------------------
+# Matrix Assembly Function
+# ----------------------------
+def assemble_global_stiffness(coords, elems, active):
+    """Assemble global stiffness matrix K."""
+    n_nodes = coords.shape[0]
+    n_dof = 3 * n_nodes
+    K = np.zeros((n_dof, n_dof))
+
+    for i, row in elems.iterrows():
+        if not active[i]:
+            continue
+        n1, n2 = int(row.n1), int(row.n2)
+        k_e, _ = bar_stiffness(coords[n1], coords[n2])
+        dof = np.r_[3*n1:3*n1+3, 3*n2:3*n2+3]
+        K[np.ix_(dof, dof)] += k_e
+
+    return K
+
+
+# ----------------------------
+# Solver Function
+# ----------------------------
+def solve_system(K, known_dofs, known_vals):
+    """
+    Apply boundary conditions and solve:
+        [K_ff] U_f = F_f
+    """
+    n_dof = K.shape[0]
+
+    free_dofs = np.setdiff1d(np.arange(n_dof), known_dofs)
+
+    K_ff = K[np.ix_(free_dofs, free_dofs)]
+    K_fk = K[np.ix_(free_dofs, known_dofs)]
+
+    F = np.zeros(n_dof)
+    F_f = F[free_dofs] - K_fk @ known_vals
+
+    # Regularization ensures invertibility
+    try:
+        U_f = np.linalg.solve(K_ff + np.eye(len(K_ff)) * 1e-8, F_f)
+    except np.linalg.LinAlgError:
+        raise  # the caller (fea_solver) will catch this
+
+    # Reconstruct full displacement vector
+    U = np.zeros(n_dof)
+    U[free_dofs] = U_f
+    U[known_dofs] = known_vals
+
+    return U
 
 # ----------------------------
 # FEA Solver
 # ----------------------------
-def fea_solver(results_dir):
+def fea_solver(results_dir, tol=GRIP_LENGTH):
+    start_time = time.time()
     print(f"🔧 Running FEA on geometry from {results_dir}")
 
     fea_dir = os.path.join(results_dir, "fea_results")
@@ -73,7 +127,7 @@ def fea_solver(results_dir):
     force_disp_curve = [] # total force vs displacement
 
     y_min, y_max = coords[:, 1].min(), coords[:, 1].max()
-    tol = 0.1
+
     top_nodes = nodes.loc[np.abs(nodes["y"] - y_max) < tol, "node_id"].values.astype(int)
     bot_nodes = nodes.loc[np.abs(nodes["y"] - y_min) < tol, "node_id"].values.astype(int)
     print(f"Top nodes: {len(top_nodes)}, Bottom nodes: {len(bot_nodes)}")
@@ -84,35 +138,41 @@ def fea_solver(results_dir):
         dy_bot = -DISPLACEMENT_MAX * disp_factor
         print(f"➡️  Step {step+1}/{N_STEPS} | dy_top={dy_top:.3f}, dy_bot={dy_bot:.3f}")
 
-        # Assemble global stiffness
-        K = np.zeros((n_dof, n_dof))
-        for i, row in elems.iterrows():
-            if not active[i]:
-                continue
-            n1, n2 = int(row.n1), int(row.n2)
-            k_e, _ = bar_stiffness(coords[n1], coords[n2])
-            dof = np.r_[3*n1:3*n1+3, 3*n2:3*n2+3]
-            K[np.ix_(dof, dof)] += k_e
+        # --- ASSEMBLE STIFFNESS ---
+        K = assemble_global_stiffness(coords, elems, active)
 
-        # Boundary conditions
-        U = np.zeros(n_dof)
-        disp_dofs = {3*n+1: dy_top for n in top_nodes}
-        disp_dofs.update({3*n+1: dy_bot for n in bot_nodes})
+        # --- BOUNDARY CONDITIONS ---
+        disp_dofs = {}
+
+        # Top nodes
+        for n in top_nodes:
+            disp_dofs.update({
+                3*n+0: 0.0,        # x DOF fixed
+                3*n+1: dy_top,     # y DOF prescribed
+                3*n+2: 0.0         # z DOF fixed
+            })
+
+        # Bottom nodes
+        for n in bot_nodes:
+            disp_dofs.update({
+                3*n+0: 0.0,        # x DOF fixed
+                3*n+1: dy_bot,     # y DOF prescribed
+                3*n+2: 0.0         # z DOF fixed
+            })
+
         known_dofs = np.array(list(disp_dofs.keys()))
         known_vals = np.array([disp_dofs[d] for d in known_dofs])
-        free_dofs = np.setdiff1d(np.arange(n_dof), known_dofs)
 
-        K_ff = K[np.ix_(free_dofs, free_dofs)]
-        K_fk = K[np.ix_(free_dofs, known_dofs)]
-        F = np.zeros(n_dof)
-        F_f = F[free_dofs] - K_fk @ known_vals
-        U_f = np.linalg.solve(K_ff + np.eye(len(K_ff)) * 1e-8, F_f)
-        U[free_dofs] = U_f
-        U[known_dofs] = known_vals
+        # --- SOLVE ---
+        try:
+            U = solve_system(K, known_dofs, known_vals)
+        except np.linalg.LinAlgError:
+            print(f"❌ Singular matrix at step {step+1}. Saving partial results and stopping.")
+            break
 
-        # Compute reaction forces on constrained DOFs
+        # --- Now safe to compute reactions ---
         F_react = K @ U
-        F_top = F_react[np.array([3*n+1 for n in top_nodes])]
+        F_top = F_react[[3*n+1 for n in top_nodes]]
         total_force = F_top.sum()
         total_disp = dy_top - dy_bot
         force_disp_curve.append([total_disp, total_force])
@@ -130,7 +190,7 @@ def fea_solver(results_dir):
             u1 = U[3*n1:3*n1+3]
             u2 = U[3*n2:3*n2+3]
             strain = np.dot(n, (u2 - u1)) / L
-            stress_ax = interp_stress(strain, axial_strain, axial_stress)
+            stress_ax = E_mod * strain
             stress[i] = stress_ax
             if abs(strain) > MAX_STRAIN:
                 active[i] = False
@@ -197,6 +257,11 @@ def fea_solver(results_dir):
 
     print(f"✅ FEA completed. Results saved to {fea_dir}")
 
+    total_time = time.time() - start_time
+    with open(os.path.join(fea_dir, "runtime.txt"), "w") as f:
+        f.write(f"Total FEA runtime: {total_time:.6f} seconds\n")
+
+    print(f"⏱️ Total runtime: {total_time:.3f} seconds")
 
 # ----------------------------
 # Run from command line
@@ -206,4 +271,4 @@ if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("Usage: python fea_solver.py <results_dir>")
         exit()
-    fea_solver(sys.argv[1])
+    fea_solver(sys.argv[1], tol=GRIP_LENGTH)
