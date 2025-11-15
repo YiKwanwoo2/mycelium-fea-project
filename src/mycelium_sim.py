@@ -25,11 +25,21 @@ initial_tips = 25
 Omega0 = 5e-6 #5e-6           # total initial internal substrate (mol)
 T_steps = 25           # number of steps for demo
 
-dist_inoculum = 0.0  # mm, distance between multiple inoculum points
+WALL_THICKNESS = 0.05
+DISH_SIZE = 5.0
+HEIGHT = 0.1
+H0_PER_POINT = 10
+SUBSTRATE_WIDTH = 2.0  # mm, width of substrate in Y direction
+
+dist_inoculum = 1.0  # mm, distance between multiple inoculum points
 
 INOCULUM_POINTS = [
-    [0.0, dist_inoculum/2, 0.0]   # UP
-    # [0.0, -dist_inoculum/2, 0.0],   # DOWN
+    [-dist_inoculum, dist_inoculum/2, 0.0],   # UP
+    [0.0,            dist_inoculum/2, 0.0],
+    [dist_inoculum,  dist_inoculum/2, 0.0],
+    [-dist_inoculum,-dist_inoculum/2, 0.0],
+    [0.0,           -dist_inoculum/2, 0.0],
+    [dist_inoculum, -dist_inoculum/2, 0.0]   # DOWN
 ]
 
 # geometric & numerical tolerances
@@ -537,6 +547,12 @@ def plot_mycelium(M, step, cuboids=None, title=None, show=True, snapshot_dir=Non
     fig = plt.figure(figsize=(7,7))
     ax = fig.add_subplot(111, projection='3d')
 
+    # --- hide z-axis completely ---
+    ax.set_zticks([])
+    ax.set_zticklabels([])
+    ax.zaxis.line.set_visible(False)
+    ax.zaxis.pane.set_visible(False)
+
     # --- plot mycelium segments ---
     max_val = max((s.I * s.length()) for _,_,s in M.all_segments()) if any(True for _ in M.all_segments()) else 1.0
     for _,_,s in M.all_segments():
@@ -555,7 +571,9 @@ def plot_mycelium(M, step, cuboids=None, title=None, show=True, snapshot_dir=Non
     ax.view_init(elev=90, azim=-90)  # top-down XY view
     ax.set_xlabel("X [mm]")
     ax.set_ylabel("Y [mm]")
-    ax.set_zlabel("Z [mm]")
+    # ax.set_zlabel("Z [mm]")
+    # HIDE Z AXIS
+    ax.zaxis.set_visible(False)
     ax.set_box_aspect([1,1,0.1])
     ax.grid(False)
 
@@ -597,37 +615,22 @@ def draw_cuboid(ax, cuboid):
 # Demo simulation loop
 # -------------------------
 def run_demo():
-    M = initialize_inoculum(points=INOCULUM_POINTS, H0_per_point=10)
+    M = initialize_inoculum(points=INOCULUM_POINTS, H0_per_point=H0_PER_POINT)
     cuboids = []
 
-    wall_thickness = 0.05
-    dish_size = 5.0
-    height = 0.1
-
-    # substrate & walls as before
-    cuboids.append(Cuboid(center=[0.0, 0.0, 0.0],
-                          size=[dish_size, 2.0, height],
-                          ctype='substrate',
-                          attrs={'E': 2e-6, 'mu': 1e8}))
+    cuboids.append(Cuboid(
+        center=[0.0, 0.0, 0.0],
+        size=[DISH_SIZE, SUBSTRATE_WIDTH, HEIGHT],
+        ctype='substrate',
+        attrs={'E': 2e-6, 'mu': 1e8}
+    ))
 
     cuboids += [
-        # Cuboid(center=[-(dish_size/2 + wall_thickness/2), 0, 0],
-        #        size=[wall_thickness, dish_size*1.1, height*1.1],
-        #        ctype='impenetrable'),
-        # Cuboid(center=[(dish_size/2 + wall_thickness/2), 0, 0],
-        #        size=[wall_thickness, dish_size*1.1, height*1.1],
-        #        ctype='impenetrable'),
-        # Cuboid(center=[0, -(dish_size/2 + wall_thickness/2), 0],
-        #        size=[dish_size*1.1, wall_thickness, height*1.1],
-        #        ctype='impenetrable'),
-        # Cuboid(center=[0, (dish_size/2 + wall_thickness/2), 0],
-        #        size=[dish_size*1.1, wall_thickness, height*1.1],
-        #        ctype='impenetrable'),
-        Cuboid(center=[0, 0, -height/2 - wall_thickness/2],
-               size=[dish_size, dish_size, wall_thickness],
+        Cuboid(center=[0, 0, -HEIGHT/2 - WALL_THICKNESS/2],
+               size=[DISH_SIZE, DISH_SIZE, WALL_THICKNESS],
                ctype='impenetrable'),
-        Cuboid(center=[0, 0, height/2 + wall_thickness/2],
-               size=[dish_size, dish_size, wall_thickness],
+        Cuboid(center=[0, 0, HEIGHT/2 + WALL_THICKNESS/2],
+               size=[DISH_SIZE, DISH_SIZE, WALL_THICKNESS],
                ctype='impenetrable')
     ]
 
@@ -651,7 +654,7 @@ def run_demo():
         stats["step"] = t
         history.append(stats)
 
-        if t % 5 == 0 or t == T_steps - 1:
+        if t % 1 == 0 or t == T_steps - 1:
             print(f"Step {t}: {stats}")
             plot_mycelium(M, t, cuboids=cuboids, title=f"Step {t} (Petri Dish)", show=False, snapshot_dir=snapshot_dir)
 
@@ -704,6 +707,11 @@ def export_geometry(M, out_dir):
 def plot_growth_summary(df, out_dir):
     """Plot key growth indicators over time."""
     fig, axes = plt.subplots(3, 1, figsize=(8, 9), sharex=True)
+
+    # Remove the right/top spines ("z-axis"-looking lines)
+    for ax in axes:
+        ax.spines["right"].set_visible(False)
+        ax.spines["top"].set_visible(False)
 
     axes[0].plot(df["step"], df["total_length_mm"], label="Total Hyphal Length")
     axes[0].set_ylabel("Length [mm]")
