@@ -11,9 +11,9 @@ E_mod = 2500  # Young's Modulus in MPa
 d = 0.0002  # mm
 t = 0.000001  # mm
 A = 3.14 * ((d / 2) ** 2 - (d / 2 - t) ** 2) # mm²
-# I = 3.14 * ( (d)**4 - (d - 2*t)**4 ) / 64  # mm^4
+I = 3.14 * ( (d)**4 - (d - 2*t)**4 ) / 64  # mm^4
 # A = 3.14 * ((d / 2) ** 2) # mm²
-I = A*0.001  # mm^4
+# I = A*0.001  # mm^4
 N_STEPS = 40
 DISPLACEMENT_MAX = 2.00  # mm
 
@@ -22,6 +22,8 @@ MAX_STRAIN = 0.018
 MAX_STRESS = E_mod * MAX_STRAIN
 
 GRIP_LENGTH = 0.5  # mm
+
+strain_record = []
 
 # ----------------------------
 # Helpers
@@ -147,17 +149,17 @@ def fea_solver(results_dir, tol=GRIP_LENGTH):
         # Top nodes
         for n in top_nodes:
             disp_dofs.update({
-                3*n+0: 0.0,        # x DOF fixed
+                # 3*n+0: 0.0,        # x DOF fixed
                 3*n+1: dy_top,     # y DOF prescribed
-                3*n+2: 0.0         # z DOF fixed
+                # 3*n+2: 0.0         # z DOF fixed
             })
 
         # Bottom nodes
         for n in bot_nodes:
             disp_dofs.update({
-                3*n+0: 0.0,        # x DOF fixed
+                # 3*n+0: 0.0,        # x DOF fixed
                 3*n+1: dy_bot,     # y DOF prescribed
-                3*n+2: 0.0         # z DOF fixed
+                # 3*n+2: 0.0         # z DOF fixed
             })
 
         known_dofs = np.array(list(disp_dofs.keys()))
@@ -179,21 +181,59 @@ def fea_solver(results_dir, tol=GRIP_LENGTH):
 
         # Stress computation
         stress = np.zeros(n_elems)
-        for i, row in elems.iterrows():
-            if not active[i]:
+        # for i, row in elems.iterrows():
+        #     if not active[i]:
+        #         continue
+        #     n1, n2 = int(row.n1), int(row.n2)
+        #     p1, p2 = coords[n1], coords[n2]
+        #     L_vec = p2 - p1
+        #     L = np.linalg.norm(L_vec)
+        #     n = L_vec / L
+        #     u1 = U[3*n1:3*n1+3]
+        #     u2 = U[3*n2:3*n2+3]
+        #     strain = np.dot(n, (u2 - u1)) / L
+        #     stress_ax = E_mod * strain
+        #     stress[i] = stress_ax
+        #     if abs(strain) > MAX_STRAIN:
+        #         active[i] = False
+        strain_arr = np.zeros(n_elems)
+        for idx in range(n_elems):
+            if not active[idx]:
                 continue
+
+            row = elems.iloc[idx]
             n1, n2 = int(row.n1), int(row.n2)
-            p1, p2 = coords[n1], coords[n2]
+
+            p1 = coords[n1]
+            p2 = coords[n2]
+
             L_vec = p2 - p1
             L = np.linalg.norm(L_vec)
+            if L < 1e-12:
+                strain_arr[idx] = 0.0
+                stress[idx] = 0.0
+                continue
+
             n = L_vec / L
+
             u1 = U[3*n1:3*n1+3]
             u2 = U[3*n2:3*n2+3]
+
+            # --- axial strain ---
             strain = np.dot(n, (u2 - u1)) / L
+            strain_arr[idx] = strain
+
+            # --- axial stress ---
             stress_ax = E_mod * strain
-            stress[i] = stress_ax
+            stress[idx] = stress_ax
+
+            # --- failure ---
             if abs(strain) > MAX_STRAIN:
-                active[i] = False
+                active[idx] = False
+                # Optional: debug print
+                # print(f"Element {idx} failed: strain={strain:.6f}")
+
+        strain_record.append(strain_arr.copy())
 
         stress_record.append(stress)
         active_record.append(active.copy())
@@ -262,6 +302,11 @@ def fea_solver(results_dir, tol=GRIP_LENGTH):
         f.write(f"Total FEA runtime: {total_time:.6f} seconds\n")
 
     print(f"⏱️ Total runtime: {total_time:.3f} seconds")
+
+    strain_df = pd.DataFrame(strain_record, columns=[f"elem_{i}" for i in range(n_elems)])
+    strain_df["step"] = np.arange(1, len(strain_record) + 1)
+    strain_df.to_csv(os.path.join(fea_dir, "strain_record.csv"), index=False)
+
 
 # ----------------------------
 # Run from command line
