@@ -3,6 +3,8 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import os
 import time
+from scipy.sparse import lil_matrix, csr_matrix, identity
+from scipy.sparse.linalg import spsolve
 
 # ----------------------------
 # Material & Simulation Parameters
@@ -55,45 +57,44 @@ def bar_stiffness(p1, p2, E=E_mod, A=A, I=I):
 # Matrix Assembly Function
 # ----------------------------
 def assemble_global_stiffness(coords, elems, active):
-    """Assemble global stiffness matrix K."""
     n_nodes = coords.shape[0]
     n_dof = 3 * n_nodes
-    K = np.zeros((n_dof, n_dof))
+
+    K = lil_matrix((n_dof, n_dof))
 
     for i, row in elems.iterrows():
         if not active[i]:
             continue
+
         n1, n2 = int(row.n1), int(row.n2)
         k_e, _ = bar_stiffness(coords[n1], coords[n2])
         dof = np.r_[3*n1:3*n1+3, 3*n2:3*n2+3]
+
         K[np.ix_(dof, dof)] += k_e
 
-    return K
+    return K.tocsr()   # ← RETURN AS CSR (required for spsolve)
 
 
 # ----------------------------
 # Solver Function
 # ----------------------------
 def solve_system(K, known_dofs, known_vals):
-    """
-    Apply boundary conditions and solve:
-        [K_ff] U_f = F_f
-    """
     n_dof = K.shape[0]
 
     free_dofs = np.setdiff1d(np.arange(n_dof), known_dofs)
 
-    K_ff = K[np.ix_(free_dofs, free_dofs)]
-    K_fk = K[np.ix_(free_dofs, known_dofs)]
+    # Extract submatrices as sparse
+    K_ff = K[free_dofs][:, free_dofs].tocsr()
+    K_fk = K[free_dofs][:, known_dofs]
 
     F = np.zeros(n_dof)
     F_f = F[free_dofs] - K_fk @ known_vals
 
-    # Regularization ensures invertibility
-    try:
-        U_f = np.linalg.solve(K_ff + np.eye(len(K_ff)) * 1e-8, F_f)
-    except np.linalg.LinAlgError:
-        raise  # the caller (fea_solver) will catch this
+    # Add tiny regularization for numerical stability
+    K_ff = K_ff + 1e-12 * identity(K_ff.shape[0], format="csr")
+
+    # --- HERE IS THE SCIPY SOLVER ---
+    U_f = spsolve(K_ff, F_f)   # ← SPARSE, FAST
 
     # Reconstruct full displacement vector
     U = np.zeros(n_dof)
