@@ -141,14 +141,11 @@ def solve_system(K, known_dofs, known_vals):
 
     return U
 
-def plot_network(coords, elems, stress, active, fea_dir, step):
-    # Use updated coordinates
+def plot_network(coords, elems, stress, active, fea_dir, step, max_stress=MAX_STRESS):
     xy = coords[:, :2]
 
     segments = []
-    colors = []
-
-    max_stress = max(1e-12, np.max(np.abs(stress)))
+    active_stress = []    # <--- collect only matching stresses
 
     for i, row in elems.iterrows():
         if not active[i]:
@@ -156,33 +153,31 @@ def plot_network(coords, elems, stress, active, fea_dir, step):
 
         n1 = int(row.n1)
         n2 = int(row.n2)
-
         segments.append([xy[n1], xy[n2]])
 
-        # Your desired normalization
-        colors.append(stress[i] / max_stress)
+        # Collect stress ONLY for active elements
+        active_stress.append(stress[i])
 
-    colors = np.array(colors, dtype=float)
+    active_stress = np.array(active_stress)
 
-    # Normalize explicitly to [0,1]
-    norm = Normalize(vmin=0.0, vmax=1.0)
+    # Normalize stress properly
+    colors = active_stress / MAX_STRESS
 
     # Create LineCollection
     lc = LineCollection(
         segments,
         cmap="plasma",
-        norm=norm,
         array=colors,
+        norm=Normalize(vmin=0, vmax=1),
         linewidths=1.2,
     )
 
     fig, ax = plt.subplots(figsize=(6, 6))
     ax.add_collection(lc)
-
     ax.set_xlim(-1.2, 1.2)
     ax.set_ylim(-1.2, 1.2)
     ax.set_aspect("equal")
-    ax.set_title(f"Step {step+1} - Active: {np.sum(active)}")
+    ax.set_title(f"Step {step+1} - Active: {active.sum()}")
     ax.set_xlabel("x [mm]")
     ax.set_ylabel("y [mm]")
     plt.tight_layout()
@@ -288,7 +283,7 @@ def fea_solver(results_dir, tol=GRIP_LENGTH):
         disp_record.append(U.copy())
 
         # Visualization
-        plot_network(coords + U.reshape((-1,3)), elems, stress, active, fea_dir, step)
+        plot_network(coords + U.reshape((-1,3)), elems, stress, active, fea_dir, step, max_stress=MAX_STRESS)
 
         if active.sum() == 0:
             print(f"⚠️  Simulation stopped early at step {step+1}.")
