@@ -32,26 +32,46 @@ def interp_stress(strain, strain_table, stress_table):
     return np.interp(abs(strain), strain_table, stress_table)
 
 
-def bar_stiffness(p1, p2, E=E_mod, A=A, I=I):
-    L_vec = p2 - p1
-    L = np.linalg.norm(L_vec)
-    if L < 1e-12:
-        return np.zeros((6, 6)), L
-    n = L_vec / L
-    nx, ny, nz = n
-    T = np.array([[nx, ny, nz]])
-    k_axial = E * A / L
-    k_ax = k_axial * np.block([
-        [T.T @ T, -(T.T @ T)],
-        [-(T.T @ T), T.T @ T]
-    ])
-    k_bend_val = 12 * E * I / (L ** 3)
-    perp = np.eye(3) - np.outer(n, n)
-    k_bend = k_bend_val * np.block([
-        [perp, -perp],
-        [-perp, perp]
-    ])
-    return k_ax + k_bend, L
+def bar_stiffness_bulk(p1s, p2s, E=E_mod, A=A, I=I):
+    """
+    Vectorized stiffness calculator.
+    p1s, p2s: (N,3) arrays
+    returns K_bulk: (N, 6, 6)
+    """
+    # vectorized geometry
+    L_vec = p2s - p1s                 # (N,3)
+    L = np.linalg.norm(L_vec, axis=1) # (N,)
+
+    # avoid divide by zero
+    L_safe = np.where(L < 1e-12, 1e-12, L)
+    n = L_vec / L_safe[:,None]        # (N,3)
+
+    # axial part
+    k_axial = (E * A) / L_safe        # (N,)
+    T = n[:, :, None]                 # (N,3,1)
+    TT = T @ T.transpose(0,2,1)       # (N,3,3)
+
+    K_ax = np.zeros((len(L), 6, 6))
+    K_ax[:,0:3,0:3] =  TT
+    K_ax[:,0:3,3:6] = -TT
+    K_ax[:,3:6,0:3] = -TT
+    K_ax[:,3:6,3:6] =  TT
+    K_ax *= k_axial[:,None,None]
+
+    # bending part (vectorized)
+    perp = np.eye(3) - n[:,None,:] * n[:,:,None]   # (N,3,3)
+    k_bend_val = 12 * E * I / (L_safe**3)
+
+    # same block pattern as axial
+    K_b = np.zeros((len(L), 6, 6))
+    K_b[:,0:3,0:3] =  perp
+    K_b[:,3:6,0:3] = -perp
+    K_b[:,0:3,3:6] = -perp
+    K_b[:,3:6,3:6] =  perp
+    K_b *= k_bend_val[:,None,None]
+
+    return K_ax + K_b, L
+
 
 # ----------------------------
 # Matrix Assembly Function
@@ -60,19 +80,35 @@ def assemble_global_stiffness(coords, elems, active):
     n_nodes = coords.shape[0]
     n_dof = 3 * n_nodes
 
-    K = lil_matrix((n_dof, n_dof))
+    # extract only active elements
+    eidx = np.where(active)[0]
 
-    for i, row in elems.iterrows():
-        if not active[i]:
-            continue
+    # batch endpoints
+    p1s = coords[elems.loc[eidx,"n1"].values]
+    p2s = coords[elems.loc[eidx,"n2"].values]
 
-        n1, n2 = int(row.n1), int(row.n2)
-        k_e, _ = bar_stiffness(coords[n1], coords[n2])
+    # vectorized stiffness computation
+    K_e_all, _ = bar_stiffness_bulk(p1s, p2s)
+
+    # build COO lists
+    rows = []
+    cols = []
+    vals = []
+
+    for k, e in enumerate(eidx):
+        n1 = int(elems.loc[e,"n1"])
+        n2 = int(elems.loc[e,"n2"])
         dof = np.r_[3*n1:3*n1+3, 3*n2:3*n2+3]
 
-        K[np.ix_(dof, dof)] += k_e
+        Ke = K_e_all[k]
+        for i_local in range(6):
+            for j_local in range(6):
+                rows.append(dof[i_local])
+                cols.append(dof[j_local])
+                vals.append(Ke[i_local, j_local])
 
-    return K.tocsr()   # ← RETURN AS CSR (required for spsolve)
+    K = csr_matrix((vals, (rows, cols)), shape=(n_dof, n_dof))
+    return K
 
 
 # ----------------------------
