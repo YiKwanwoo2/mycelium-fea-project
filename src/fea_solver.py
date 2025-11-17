@@ -5,6 +5,8 @@ import os
 import time
 from scipy.sparse import lil_matrix, csr_matrix, identity
 from scipy.sparse.linalg import spsolve
+from matplotlib.collections import LineCollection
+from matplotlib.colors import Normalize
 
 # ----------------------------
 # Material & Simulation Parameters
@@ -17,7 +19,7 @@ A = 3.14 * ((d / 2) ** 2 - (d / 2 - t) ** 2) # mm²
 # A = 3.14 * ((d / 2) ** 2) # mm²
 I = A*0.001  # mm^4
 N_STEPS = 40
-DISPLACEMENT_MAX = 2.00  # mm
+DISPLACEMENT_MAX = 0.2  # mm
 
 # Automatically set failure strain
 MAX_STRAIN = 0.018
@@ -139,6 +141,55 @@ def solve_system(K, known_dofs, known_vals):
 
     return U
 
+def plot_network(coords, elems, stress, active, fea_dir, step):
+    # Use updated coordinates
+    xy = coords[:, :2]
+
+    segments = []
+    colors = []
+
+    max_stress = max(1e-12, np.max(np.abs(stress)))
+
+    for i, row in elems.iterrows():
+        if not active[i]:
+            continue
+
+        n1 = int(row.n1)
+        n2 = int(row.n2)
+
+        segments.append([xy[n1], xy[n2]])
+
+        # Your desired normalization
+        colors.append(stress[i] / max_stress)
+
+    colors = np.array(colors, dtype=float)
+
+    # Normalize explicitly to [0,1]
+    norm = Normalize(vmin=0.0, vmax=1.0)
+
+    # Create LineCollection
+    lc = LineCollection(
+        segments,
+        cmap="plasma",
+        norm=norm,
+        array=colors,
+        linewidths=1.2,
+    )
+
+    fig, ax = plt.subplots(figsize=(6, 6))
+    ax.add_collection(lc)
+
+    ax.set_xlim(-1.2, 1.2)
+    ax.set_ylim(-1.2, 1.2)
+    ax.set_aspect("equal")
+    ax.set_title(f"Step {step+1} - Active: {np.sum(active)}")
+    ax.set_xlabel("x [mm]")
+    ax.set_ylabel("y [mm]")
+    plt.tight_layout()
+
+    plt.savefig(os.path.join(fea_dir, f"fea_step_{step:03d}.png"))
+    plt.close()
+
 # ----------------------------
 # FEA Solver
 # ----------------------------
@@ -237,24 +288,7 @@ def fea_solver(results_dir, tol=GRIP_LENGTH):
         disp_record.append(U.copy())
 
         # Visualization
-        new_coords = coords + U.reshape((-1, 3))
-        plt.figure(figsize=(6, 6))
-        for i, row in elems.iterrows():
-            if not active[i]:
-                continue
-            n1, n2 = int(row.n1), int(row.n2)
-            p1, p2 = new_coords[n1], new_coords[n2]
-            color_val = stress[i] / MAX_STRESS
-            plt.plot([p1[0], p2[0]], [p1[1], p2[1]], color=plt.cm.plasma(color_val))
-        plt.xlim(-3, 3)
-        plt.ylim(-3, 3)
-        plt.title(f"Step {step+1}/{N_STEPS} - Active: {active.sum()}")
-        plt.xlabel("x [mm]")
-        plt.ylabel("y [mm]")
-        plt.axis("equal")
-        plt.tight_layout()
-        plt.savefig(os.path.join(fea_dir, f"fea_step_{step:03d}.png"))
-        plt.close()
+        plot_network(coords + U.reshape((-1,3)), elems, stress, active, fea_dir, step)
 
         if active.sum() == 0:
             print(f"⚠️  Simulation stopped early at step {step+1}.")
