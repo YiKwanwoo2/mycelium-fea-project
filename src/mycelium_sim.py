@@ -28,6 +28,7 @@ M_cap = 2e-6            # mol/mm, max conc per mm
 initial_tips = 25
 Omega0 = 5e-6 #5e-6           # total initial internal substrate (mol)
 T_steps = 25           # number of steps for demo
+ANASTOMOSIS_TOL = 5e-3 #1e-3  # mm, tolerance to detect intersection (very small)
 
 WALL_THICKNESS = 0.05
 DISH_SIZE = 5.0
@@ -45,9 +46,6 @@ INOCULUM_POINTS = [
     [0.0,           -dist_inoculum/2, 0.0],
     [dist_inoculum, -dist_inoculum/2, 0.0]   # DOWN
 ]
-
-# geometric & numerical tolerances
-ANASTOMOSIS_TOL = 5e-3 #1e-3  # mm, tolerance to detect intersection (very small)
 
 # Save outputs under results/
 RESULTS_DIR = "results"
