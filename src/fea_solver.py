@@ -19,13 +19,13 @@ A = 3.14 * ((d / 2) ** 2 - (d / 2 - t) ** 2) # mm²
 # A = 3.14 * ((d / 2) ** 2) # mm²
 I = A*0.001  # mm^4
 N_STEPS = 40
-DISPLACEMENT_MAX = 0.02  # mm
+DISPLACEMENT_MAX = 0.06  # mm
 
 # Automatically set failure strain
 MAX_STRAIN = 0.018
 MAX_STRESS = E_mod * MAX_STRAIN
 
-GRIP_LENGTH = 1.5  # mm
+GRIP_LENGTH = 0.1  # mm
 
 def bar_stiffness_bulk(p1s, p2s, E=E_mod, A=A, I=I):
     """
@@ -167,10 +167,10 @@ def plot_network(coords, elems, stress, active, fea_dir, step, max_stress=MAX_ST
 
     fig, ax = plt.subplots(figsize=(6, 6))
     ax.add_collection(lc)
-    # ax.set_xlim(-1.2, 1.2)
-    # ax.set_ylim(-1.2, 1.2)
-    ax.set_xlim(-2.5, 2.5)
-    ax.set_ylim(-2.5, 2.5)
+    ax.set_xlim(-1.7, 1.7)
+    ax.set_ylim(-0.2, 3.2)
+    # ax.set_xlim(-2.5, 2.5)
+    # ax.set_ylim(-2.5, 2.5)
     ax.set_aspect("equal")
     ax.set_title(f"Step {step+1} - Active: {active.sum()}")
     ax.set_xlabel("x [mm]")
