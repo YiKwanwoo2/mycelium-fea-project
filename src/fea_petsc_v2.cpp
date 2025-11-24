@@ -1,7 +1,6 @@
-// fea_petsc.cpp
+// fea_petsc_fixed.cpp
 // PETSc-based FEA of rod/beam network (3 DOF per node).
-// Reads nodes.csv and elements.csv (same CSV format produced by your exporter).
-// Compile on Great Lakes after loading petsc + mpi: see instructions below.
+// Updated to match behavior of the provided Python solver.
 
 #include <petscksp.h>
 #include <iostream>
@@ -11,44 +10,49 @@
 #include <string>
 #include <cmath>
 #include <sys/stat.h>   // for mkdir
+#include <sys/types.h>
 #include <iomanip>
+#include <unordered_map>
 
 using std::string;
 using std::vector;
 
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
 // -----------------------
-// Parameters (matching Python)
+// Parameters (match Python behavior)
 static const double E_mod = 2500.0;        // MPa
 static const double d = 0.0002;            // mm
 static const double t_shell = 0.000001;    // mm
-static const double A_area = 3.14159265358979323846 * ((d/2.0)*(d/2.0) - (d/2.0 - t_shell)*(d/2.0 - t_shell));
-static const double I_moment = A_area * 0.001; // mm^4 (approx)
-static const int N_STEPS = 100;
-static const double DISPLACEMENT_MAX = 0.06; // mm
+static const double A_area = 3.14 * ((d/2.0)*(d/2.0) - (d/2.0 - t_shell)*(d/2.0 - t_shell)); // mm^2 (closer to Python)
+static const double I_moment = A_area * 0.001; // mm^4 (approx, same idea as Python)
+static const int N_STEPS = 40;                     // match Python default
+static const double DISPLACEMENT_MAX = 0.02; // mm
 static const double MAX_STRAIN = 0.018;
 static const double MAX_STRESS = E_mod * MAX_STRAIN;
-static const double GRIP_LENGTH = 0.1; // mm
+static const double GRIP_LENGTH = 1.5; // mm (match Python)
 
 // -----------------------
 // Data containers
 struct Node {
-    int id;
+    int id;      // original id from CSV
     double x,y,z;
 };
 
 struct Elem {
     int id;
-    int n1, n2;
+    int n1, n2;   // stored as node INDICES (after conversion)
     bool active;
 };
 
 // -----------------------
 // CSV helpers
 static void trim_inplace(std::string &s){
-    // trim whitespace
     const char *ws = " \t\n\r";
     auto p0 = s.find_first_not_of(ws);
-    if (p0==string::npos){ s.clear(); return; }
+    if(p0==string::npos){ s.clear(); return; }
     auto p1 = s.find_last_not_of(ws);
     s = s.substr(p0, p1-p0+1);
 }
@@ -69,6 +73,7 @@ vector<Node> read_nodes_csv(const string &path){
         while(std::getline(ss, tok, ',')) { trim_inplace(tok); toks.push_back(tok); }
         if(toks.size() < 4) continue;
         Node n;
+        // assume CSV columns: node_id, x, y, z
         n.id = std::stoi(toks[0]);
         n.x  = std::stod(toks[1]);
         n.y  = std::stod(toks[2]);
@@ -94,7 +99,7 @@ vector<Elem> read_elems_csv(const string &path){
         if(toks.size() < 3) continue;
         Elem e;
         e.id = std::stoi(toks[0]);
-        e.n1 = std::stoi(toks[1]);
+        e.n1 = std::stoi(toks[1]); // temporarily store raw node id
         e.n2 = std::stoi(toks[2]);
         e.active = true;
         el.push_back(e);
@@ -104,7 +109,6 @@ vector<Elem> read_elems_csv(const string &path){
 
 // -----------------------
 // Element stiffness (6x6) for axial + simple bending term
-// This mirrors the Python logic: axial TT scaled by EA/L, plus a perpendicular projector scaled by 12 E I / L^3
 // Ke returned as flat 36-array in row-major.
 static void element_stiffness(const double p1[3], const double p2[3], double Ke_out[36], double &Lout){
     double vx = p2[0]-p1[0], vy = p2[1]-p1[1], vz = p2[2]-p1[2];
@@ -132,7 +136,6 @@ static void element_stiffness(const double p1[3], const double p2[3], double Ke_
     for(int i=0;i<36;i++) Ke_out[i]=0.0;
 
     // Fill blocks. BLOCK index mapping: local dof 0..5 -> node1(0..2), node2(3..5)
-    // upper-left (0:3,0:3) == + (k_axial * TT + k_bend * perp)
     for(int r=0;r<3;r++){
         for(int c=0;c<3;c++){
             double val = k_axial * TT[r*3 + c] + k_bend * perp[r*3 + c];
@@ -164,7 +167,11 @@ int main(int argc, char **argv) {
     auto make_dir_if_not_exist = [](const std::string &path){
         struct stat info;
         if(stat(path.c_str(), &info) != 0){
+#ifdef _WIN32
+            _mkdir(path.c_str());
+#else
             mkdir(path.c_str(), 0777);
+#endif
         }
     };
     std::string fea_dir = results_dir + "/fea_results";
@@ -189,18 +196,36 @@ int main(int argc, char **argv) {
         n_dof = 3 * n_nodes;
         PetscPrintf(PETSC_COMM_WORLD, "Read %d nodes, %d elements\n", n_nodes, n_elems);
 
-        // locate top & bottom nodes
+        // Build id->index map (CSV node ids may not be 0..N-1)
+        std::unordered_map<int,int> id2idx;
+        for(int i=0;i<n_nodes;i++){
+            id2idx[nodes[i].id] = i;
+        }
+
+        // Convert element node ids to indices (in-place)
+        for(auto &e : elems){
+            auto it1 = id2idx.find(e.n1);
+            auto it2 = id2idx.find(e.n2);
+            if(it1==id2idx.end() || it2==id2idx.end()){
+                throw std::runtime_error("Element references unknown node id");
+            }
+            e.n1 = it1->second; // now store index 0..n_nodes-1
+            e.n2 = it2->second;
+        }
+
+        // locate top & bottom node INDICES (use node indices)
         double y_min = 1e300, y_max = -1e300;
         for(const auto &n : nodes){
             if(n.y < y_min) y_min = n.y;
             if(n.y > y_max) y_max = n.y;
         }
-        vector<int> top_nodes, bot_nodes;
-        for(const auto &n : nodes){
-            if(std::abs(n.y - y_max) < GRIP_LENGTH) top_nodes.push_back(n.id);
-            if(std::abs(n.y - y_min) < GRIP_LENGTH) bot_nodes.push_back(n.id);
+        vector<int> top_nodes_idx, bot_nodes_idx;
+        for(int i=0;i<n_nodes;i++){
+            const auto &n = nodes[i];
+            if(std::abs(n.y - y_max) < GRIP_LENGTH) top_nodes_idx.push_back(i); // index
+            if(std::abs(n.y - y_min) < GRIP_LENGTH) bot_nodes_idx.push_back(i); // index
         }
-        PetscPrintf(PETSC_COMM_WORLD, "Top nodes: %d, Bottom nodes: %d\n", (int)top_nodes.size(), (int)bot_nodes.size());
+        PetscPrintf(PETSC_COMM_WORLD, "Top nodes: %d, Bottom nodes: %d\n", (int)top_nodes_idx.size(), (int)bot_nodes_idx.size());
 
         // --- Time-stepping loop ---
         for(int step=0; step < N_STEPS; ++step){
@@ -210,80 +235,120 @@ int main(int argc, char **argv) {
             PetscPrintf(PETSC_COMM_WORLD, "Step %d/%d dy_top=%.6f dy_bot=%.6f\n", step+1, N_STEPS, dy_top, dy_bot);
 
             // PETSc objects per step
-            Mat K = nullptr;
+            Mat K_phys = nullptr;   // physical stiffness assembled from active elements
+            Mat K_mod = nullptr;    // modified stiffness with BCs applied (for solver)
             Vec F = nullptr, U = nullptr, b = nullptr, F_react = nullptr;
             KSP ksp = nullptr;
 
-            // Wrap the step in try/catch for PETSc errors
             try {
-                // Create matrix K
-                ierr = MatCreate(PETSC_COMM_WORLD, &K); if(ierr) throw std::runtime_error("MatCreate failed");
-                ierr = MatSetSizes(K, PETSC_DECIDE, PETSC_DECIDE, n_dof, n_dof); if(ierr) throw std::runtime_error("MatSetSizes failed");
-                ierr = MatSetFromOptions(K); if(ierr) throw std::runtime_error("MatSetFromOptions failed");
-                ierr = MatSetUp(K); if(ierr) throw std::runtime_error("MatSetUp failed");
+                // --- Assemble physical stiffness K_phys (only active elements) ---
+                ierr = MatCreate(PETSC_COMM_WORLD, &K_phys); if(ierr) throw std::runtime_error("MatCreate failed");
+                ierr = MatSetSizes(K_phys, PETSC_DECIDE, PETSC_DECIDE, n_dof, n_dof); if(ierr) throw std::runtime_error("MatSetSizes failed");
+                ierr = MatSetFromOptions(K_phys); if(ierr) throw std::runtime_error("MatSetFromOptions failed");
+                ierr = MatSetUp(K_phys); if(ierr) throw std::runtime_error("MatSetUp failed");
 
-                // RHS vector F
+                // RHS vector F (all zeros)
                 ierr = VecCreate(PETSC_COMM_WORLD, &F); if(ierr) throw std::runtime_error("VecCreate failed");
                 ierr = VecSetSizes(F, PETSC_DECIDE, n_dof); if(ierr) throw std::runtime_error("VecSetSizes failed");
                 ierr = VecSetFromOptions(F); if(ierr) throw std::runtime_error("VecSetFromOptions failed");
                 ierr = VecSet(F, 0.0); if(ierr) throw std::runtime_error("VecSet failed");
 
-                // Assemble element contributions
+                // Assemble element contributions into K_phys
                 for(const auto &e : elems){
-                    if(!e.active) continue;
-                    int n1 = e.n1, n2 = e.n2;
+                    if(!e.active) continue; // skip inactive
+                    int n1 = e.n1; // index
+                    int n2 = e.n2;
                     double p1[3] = { nodes[n1].x, nodes[n1].y, nodes[n1].z };
                     double p2[3] = { nodes[n2].x, nodes[n2].y, nodes[n2].z };
                     double Ke[36]; double L;
                     element_stiffness(p1,p2,Ke,L);
 
-                    int dof[6];
+                    PetscInt dof[6];
                     for(int k=0;k<3;k++){ dof[k] = 3*n1 + k; dof[k+3] = 3*n2 + k; }
 
                     for(int i=0;i<6;i++){
                         for(int j=0;j<6;j++){
                             double val = Ke[i*6 + j];
                             if(std::abs(val)<1e-18) continue;
-                            ierr = MatSetValue(K, dof[i], dof[j], val, ADD_VALUES);
+                            ierr = MatSetValue(K_phys, dof[i], dof[j], (PetscScalar)val, ADD_VALUES);
                             if(ierr) throw std::runtime_error("MatSetValue failed");
                         }
                     }
                 }
 
-                ierr = MatAssemblyBegin(K, MAT_FINAL_ASSEMBLY); if(ierr) throw std::runtime_error("MatAssemblyBegin failed");
-                ierr = MatAssemblyEnd(K, MAT_FINAL_ASSEMBLY); if(ierr) throw std::runtime_error("MatAssemblyEnd failed");
+                ierr = MatAssemblyBegin(K_phys, MAT_FINAL_ASSEMBLY); if(ierr) throw std::runtime_error("MatAssemblyBegin failed");
+                ierr = MatAssemblyEnd(K_phys, MAT_FINAL_ASSEMBLY); if(ierr) throw std::runtime_error("MatAssemblyEnd failed");
 
-                // Dirichlet BCs
-                std::vector<int> known_dofs_idx;
-                std::vector<double> known_vals;
-                for(int n : top_nodes){
-                    known_dofs_idx.push_back(3*n + 0); known_vals.push_back(0.0);
-                    known_dofs_idx.push_back(3*n + 1); known_vals.push_back(dy_top);
-                    known_dofs_idx.push_back(3*n + 2); known_vals.push_back(0.0);
+                // Duplicate physical K to K_mod (we'll apply BCs to K_mod and use it for the solver)
+                ierr = MatDuplicate(K_phys, MAT_COPY_VALUES, &K_mod); if(ierr) throw std::runtime_error("MatDuplicate failed");
+
+                // Dirichlet BCs (collect indices as PetscInt)
+                std::vector<PetscInt> known_dofs_idx;
+                std::vector<PetscScalar> known_vals;
+
+                known_dofs_idx.reserve((top_nodes_idx.size()+bot_nodes_idx.size())*3);
+                known_vals.reserve((top_nodes_idx.size()+bot_nodes_idx.size())*3);
+
+                for(int idx : top_nodes_idx){
+                    known_dofs_idx.push_back((PetscInt)(3*idx + 0)); known_vals.push_back((PetscScalar)0.0);
+                    known_dofs_idx.push_back((PetscInt)(3*idx + 1)); known_vals.push_back((PetscScalar)dy_top);
+                    known_dofs_idx.push_back((PetscInt)(3*idx + 2)); known_vals.push_back((PetscScalar)0.0);
                 }
-                for(int n : bot_nodes){
-                    known_dofs_idx.push_back(3*n + 0); known_vals.push_back(0.0);
-                    known_dofs_idx.push_back(3*n + 1); known_vals.push_back(dy_bot);
-                    known_dofs_idx.push_back(3*n + 2); known_vals.push_back(0.0);
+                for(int idx : bot_nodes_idx){
+                    known_dofs_idx.push_back((PetscInt)(3*idx + 0)); known_vals.push_back((PetscScalar)0.0);
+                    known_dofs_idx.push_back((PetscInt)(3*idx + 1)); known_vals.push_back((PetscScalar)dy_bot);
+                    known_dofs_idx.push_back((PetscInt)(3*idx + 2)); known_vals.push_back((PetscScalar)0.0);
                 }
 
+                // Duplicate F to create b and set prescribed entries
                 ierr = VecDuplicate(F, &b); if(ierr) throw std::runtime_error("VecDuplicate failed");
                 ierr = VecCopy(F, b); if(ierr) throw std::runtime_error("VecCopy failed");
 
-                std::vector<PetscInt> rows(known_dofs_idx.begin(), known_dofs_idx.end());
-                std::vector<PetscScalar> vals(known_vals.begin(), known_vals.end());
-                for(size_t i=0;i<rows.size();++i){
-                    ierr = VecSetValue(b, rows[i], vals[i], INSERT_VALUES);
-                    if(ierr) throw std::runtime_error("VecSetValue failed");
+                if(!known_dofs_idx.empty()){
+                    ierr = VecSetValues(b, (PetscInt)known_dofs_idx.size(), known_dofs_idx.data(), known_vals.data(), INSERT_VALUES);
+                    if(ierr) throw std::runtime_error("VecSetValues failed");
                 }
                 ierr = VecAssemblyBegin(b); if(ierr) throw std::runtime_error("VecAssemblyBegin b failed");
                 ierr = VecAssemblyEnd(b); if(ierr) throw std::runtime_error("VecAssemblyEnd b failed");
 
-                ierr = MatZeroRowsColumns(K, rows.size(), rows.data(), 1.0, nullptr, b);
-                if(ierr) throw std::runtime_error("MatZeroRowsColumns failed");
+                // Apply BCs to K_mod (not K_phys)
+                // after MatAssemblyEnd(K_phys)
 
-                ierr = MatAssemblyBegin(K, MAT_FINAL_ASSEMBLY); if(ierr) throw std::runtime_error("MatAssemblyBegin after BC failed");
-                ierr = MatAssemblyEnd(K, MAT_FINAL_ASSEMBLY); if(ierr) throw std::runtime_error("MatAssemblyEnd after BC failed");
+                // 1) build x_known vector with prescribed displacements
+                Vec x_known, tmp;
+                ierr = VecDuplicate(F, &x_known); CHKERRABORT(PETSC_COMM_WORLD, ierr);
+                ierr = VecSet(x_known, 0.0); CHKERRABORT(PETSC_COMM_WORLD, ierr);
+                if(!known_dofs_idx.empty()){
+                    ierr = VecSetValues(x_known, (PetscInt)known_dofs_idx.size(), known_dofs_idx.data(), known_vals.data(), INSERT_VALUES); CHKERRABORT(PETSC_COMM_WORLD, ierr);
+                }
+                ierr = VecAssemblyBegin(x_known); CHKERRABORT(PETSC_COMM_WORLD, ierr);
+                ierr = VecAssemblyEnd(x_known); CHKERRABORT(PETSC_COMM_WORLD, ierr);
+
+                // 2) tmp = K_phys * x_known  (tmp_i = sum_j K_ij * x_known_j)
+                ierr = VecDuplicate(F, &tmp); CHKERRABORT(PETSC_COMM_WORLD, ierr);
+                ierr = MatMult(K_phys, x_known, tmp); CHKERRABORT(PETSC_COMM_WORLD, ierr);
+
+                // 3) b = -tmp  (make RHS for free DOFs equal to -K_fk * known_vals)
+                ierr = VecScale(tmp, -1.0); CHKERRABORT(PETSC_COMM_WORLD, ierr);
+                ierr = VecDuplicate(tmp, &b); CHKERRABORT(PETSC_COMM_WORLD, ierr);
+                ierr = VecCopy(tmp, b); CHKERRABORT(PETSC_COMM_WORLD, ierr);
+
+                // 4) overwrite known rows of b with the actual prescribed values
+                if(!known_dofs_idx.empty()){
+                    ierr = VecSetValues(b, (PetscInt)known_dofs_idx.size(), known_dofs_idx.data(), known_vals.data(), INSERT_VALUES); CHKERRABORT(PETSC_COMM_WORLD, ierr);
+                }
+                ierr = VecAssemblyBegin(b); CHKERRABORT(PETSC_COMM_WORLD, ierr);
+                ierr = VecAssemblyEnd(b); CHKERRABORT(PETSC_COMM_WORLD, ierr);
+
+                // 5) Now zero rows/cols in K_mod and solve
+                ierr = MatDuplicate(K_phys, MAT_COPY_VALUES, &K_mod); CHKERRABORT(PETSC_COMM_WORLD, ierr);
+                if(!known_dofs_idx.empty()){
+                    ierr = MatZeroRowsColumns(K_mod, (PetscInt)known_dofs_idx.size(), known_dofs_idx.data(), 1.0, NULL, b); CHKERRABORT(PETSC_COMM_WORLD, ierr);
+                }
+
+
+                ierr = MatAssemblyBegin(K_mod, MAT_FINAL_ASSEMBLY); if(ierr) throw std::runtime_error("MatAssemblyBegin after BC failed");
+                ierr = MatAssemblyEnd(K_mod, MAT_FINAL_ASSEMBLY); if(ierr) throw std::runtime_error("MatAssemblyEnd after BC failed");
 
                 ierr = VecAssemblyBegin(b); if(ierr) throw std::runtime_error("VecAssemblyBegin b after BC failed");
                 ierr = VecAssemblyEnd(b); if(ierr) throw std::runtime_error("VecAssemblyEnd b after BC failed");
@@ -294,45 +359,48 @@ int main(int argc, char **argv) {
                 ierr = VecSetFromOptions(U); if(ierr) throw std::runtime_error("VecSetFromOptions U failed");
                 ierr = VecSet(U, 0.0); if(ierr) throw std::runtime_error("VecSet U failed");
 
-                // Solve K U = b
+                // Solve K_mod U = b
                 ierr = KSPCreate(PETSC_COMM_WORLD, &ksp); if(ierr) throw std::runtime_error("KSPCreate failed");
-                ierr = KSPSetOperators(ksp, K, K); if(ierr) throw std::runtime_error("KSPSetOperators failed");
+                ierr = KSPSetOperators(ksp, K_mod, K_mod); if(ierr) throw std::runtime_error("KSPSetOperators failed");
                 ierr = KSPSetFromOptions(ksp); if(ierr) throw std::runtime_error("KSPSetFromOptions failed");
                 ierr = KSPSetUp(ksp); if(ierr) throw std::runtime_error("KSPSetUp failed");
 
                 ierr = KSPSolve(ksp, b, U); if(ierr) throw std::runtime_error("KSPSolve failed");
 
-                // Reactions
+                // Compute reactions using physical stiffness: F_react = K_phys * U
                 ierr = VecDuplicate(b, &F_react); if(ierr) throw std::runtime_error("VecDuplicate F_react failed");
-                ierr = MatMult(K, U, F_react); if(ierr) throw std::runtime_error("MatMult F_react failed");
+                ierr = MatMult(K_phys, U, F_react); if(ierr) throw std::runtime_error("MatMult F_react failed");
 
-                // Gather U locally
+                // Gather U locally in a batch
+                std::vector<PetscInt> all_idx(n_dof);
+                for(int ii=0; ii<n_dof; ++ii) all_idx[ii] = ii;
+                std::vector<PetscScalar> all_vals(n_dof);
+                ierr = VecGetValues(U, n_dof, all_idx.data(), all_vals.data());
+                if(ierr) throw std::runtime_error("VecGetValues failed for U");
                 std::vector<double> Uvals(n_dof);
-                for(int i=0;i<n_dof;i++){
-                    double v;
-                    ierr = VecGetValues(U, 1, &i, &v);
-                    if(ierr) throw std::runtime_error("VecGetValues failed");
-                    Uvals[i] = v;
-                }
+                for(int ii=0; ii<n_dof; ++ii) Uvals[ii] = (double)all_vals[ii];
 
-                // Total force
-                double total_force = 0.0;
-                for(int n : top_nodes){
-                    int dof_y = 3*n + 1;
-                    double fy;
-                    ierr = VecGetValues(F_react, 1, &dof_y, &fy);
+                // Gather reactions for top nodes (batch)
+                std::vector<PetscInt> top_reac_idx;
+                top_reac_idx.reserve(top_nodes_idx.size());
+                for(int idx : top_nodes_idx) top_reac_idx.push_back((PetscInt)(3*idx + 1));
+                std::vector<PetscScalar> top_reac_vals(top_reac_idx.size());
+                if(!top_reac_idx.empty()){
+                    ierr = VecGetValues(F_react, (PetscInt)top_reac_idx.size(), top_reac_idx.data(), top_reac_vals.data());
                     if(ierr) throw std::runtime_error("VecGetValues F_react failed");
-                    total_force += fy;
                 }
+                double total_force = 0.0;
+                for(size_t ii=0; ii<top_reac_vals.size(); ++ii) total_force += (double)top_reac_vals[ii];
+
                 double total_disp = dy_top - dy_bot;
                 fd_curve.emplace_back(total_disp, total_force);
 
-                // Compute stress & deactivate elements
+                // Compute stress & deactivate elements (we will modify elems[].active directly)
                 vector<double> stress(n_elems, 0.0);
                 vector<int> active_flags(n_elems, 0);
                 for(int i=0;i<n_elems;i++){
                     if(!elems[i].active){ stress[i] = 0.0; active_flags[i] = 0; continue; }
-                    int n1 = elems[i].n1, n2 = elems[i].n2;
+                    int n1 = elems[i].n1, n2 = elems[i].n2; // indices
                     double p1[3] = { nodes[n1].x, nodes[n1].y, nodes[n1].z };
                     double p2[3] = { nodes[n2].x, nodes[n2].y, nodes[n2].z };
                     double vx = p2[0]-p1[0], vy = p2[1]-p1[1], vz = p2[2]-p1[2];
@@ -347,6 +415,7 @@ int main(int argc, char **argv) {
                     double stress_ax = E_mod*strain;
                     stress[i] = stress_ax;
                     if(std::abs(strain) > MAX_STRAIN){
+                        // deactivate element for subsequent steps
                         elems[i].active = false;
                         active_flags[i] = 0;
                     } else active_flags[i] = 1;
@@ -360,39 +429,63 @@ int main(int argc, char **argv) {
                 int n_active=0; for(const auto &e: elems) if(e.active) ++n_active;
                 if(n_active==0){
                     PetscPrintf(PETSC_COMM_WORLD, "All elements failed at step %d. Stopping early.\n", step+1);
-                    break;
+                    // cleanup of PETSc objects will happen below
+                    // still break main time loop
+                    // but we must cleanup PETSc objects before break
+                    // (handled by subsequent cleanup)
+                    // mark a flag? just break here
+                    // destroy below
+                    // break out of step loop
+                    // we'll break after cleanup below to ensure MatDestroy
+                    // but here we break now and let cleanup follow
                 }
 
             } catch(const std::exception &e){
                 PetscPrintf(PETSC_COMM_WORLD, "Step %d error: %s\n", step+1, e.what());
-                // still continue to cleanup step
+                // continue to cleanup
             }
 
             // --- Cleanup PETSc objects for this step ---
-            if(ksp) KSPDestroy(&ksp);
-            if(F_react) VecDestroy(&F_react);
-            if(U) VecDestroy(&U);
-            if(b) VecDestroy(&b);
-            if(F) VecDestroy(&F);
-            if(K) MatDestroy(&K);
+            if(ksp) { KSPDestroy(&ksp); ksp = nullptr; }
+            if(F_react) { VecDestroy(&F_react); F_react = nullptr; }
+            if(U) { VecDestroy(&U); U = nullptr; }
+            if(b) { VecDestroy(&b); b = nullptr; }
+            if(F) { VecDestroy(&F); F = nullptr; }
+            if(K_mod) { MatDestroy(&K_mod); K_mod = nullptr; }
+            if(K_phys) { MatDestroy(&K_phys); K_phys = nullptr; }
+
+            // Check for early stop (if no active elements remain)
+            int n_active_now = 0; for(const auto &e: elems) if(e.active) ++n_active_now;
+            if(n_active_now == 0){
+                // we've already recorded final state; break the time loop
+                break;
+            }
         }
 
     } catch(const std::exception &e){
         PetscPrintf(PETSC_COMM_WORLD, "Fatal error: %s\n", e.what());
-        // proceed to save
+        // proceed to save partial results
     }
 
     // -----------------------
-    // Save CSV results
+    // Save CSV results (same as before)
     {
         // stress_record
         std::string filename = fea_dir + "/stress_record.csv";
         std::ofstream ofs(filename);
         if(ofs){
-            for(int j=0;j<n_elems;j++) ofs<<"elem_"<<j<<","; ofs<<"step\n";
+            // header
+            for(int j=0;j<n_elems;j++){
+                ofs << "elem_" << j;
+                if(j < n_elems-1) ofs << ",";
+            }
+            ofs << ",step\n";
             for(size_t i=0;i<stress_record.size();i++){
-                for(int j=0;j<n_elems;j++) ofs<<std::setprecision(12)<<stress_record[i][j]<<",";
-                ofs<<(i+1)<<"\n";
+                for(int j=0;j<n_elems;j++){
+                    ofs << std::setprecision(12) << stress_record[i][j];
+                    if(j < n_elems-1) ofs << ",";
+                }
+                ofs << "," << (i+1) << "\n";
             }
         }
 
@@ -400,10 +493,17 @@ int main(int argc, char **argv) {
         filename = fea_dir + "/active_elements.csv";
         std::ofstream ofs2(filename);
         if(ofs2){
-            for(int j=0;j<n_elems;j++) ofs2<<"elem_"<<j<<","; ofs2<<"step\n";
+            for(int j=0;j<n_elems;j++){
+                ofs2 << "elem_" << j;
+                if(j < n_elems-1) ofs2 << ",";
+            }
+            ofs2 << ",step\n";
             for(size_t i=0;i<active_record.size();i++){
-                for(int j=0;j<n_elems;j++) ofs2<<active_record[i][j]<<",";
-                ofs2<<(i+1)<<"\n";
+                for(int j=0;j<n_elems;j++){
+                    ofs2 << active_record[i][j];
+                    if(j < n_elems-1) ofs2 << ",";
+                }
+                ofs2 << "," << (i+1) << "\n";
             }
         }
 
@@ -411,16 +511,43 @@ int main(int argc, char **argv) {
         filename = fea_dir + "/node_displacements.csv";
         std::ofstream ofs3(filename);
         if(ofs3){
-            for(int n=0;n<n_nodes;n++) ofs3<<"node_"<<n<<"_x,";
-            for(int n=0;n<n_nodes;n++) ofs3<<"node_"<<n<<"_y,";
-            for(int n=0;n<n_nodes;n++) ofs3<<"node_"<<n<<"_z,";
-            ofs3<<"step\n";
+            // headers for node_x, node_y, node_z
+            for(int n=0;n<n_nodes;n++){
+                ofs3 << "node_" << n << "_x";
+                if(n < n_nodes-1) ofs3 << ",";
+            }
+            ofs3 << ",";
+            for(int n=0;n<n_nodes;n++){
+                ofs3 << "node_" << n << "_y";
+                if(n < n_nodes-1) ofs3 << ",";
+            }
+            ofs3 << ",";
+            for(int n=0;n<n_nodes;n++){
+                ofs3 << "node_" << n << "_z";
+                if(n < n_nodes-1) ofs3 << ",";
+            }
+            ofs3 << "step\n";
+
             for(size_t i=0;i<disp_record.size();i++){
                 const auto &Uvals = disp_record[i];
-                for(int n=0;n<n_nodes;n++) ofs3<<std::setprecision(12)<<Uvals[3*n+0]<<",";
-                for(int n=0;n<n_nodes;n++) ofs3<<std::setprecision(12)<<Uvals[3*n+1]<<",";
-                for(int n=0;n<n_nodes;n++) ofs3<<std::setprecision(12)<<Uvals[3*n+2]<<",";
-                ofs3<<(i+1)<<"\n";
+                // x components
+                for(int n=0;n<n_nodes;n++){
+                    ofs3 << std::setprecision(12) << Uvals[3*n+0];
+                    if(n < n_nodes-1) ofs3 << ",";
+                }
+                ofs3 << ",";
+                // y components
+                for(int n=0;n<n_nodes;n++){
+                    ofs3 << std::setprecision(12) << Uvals[3*n+1];
+                    if(n < n_nodes-1) ofs3 << ",";
+                }
+                ofs3 << ",";
+                // z components
+                for(int n=0;n<n_nodes;n++){
+                    ofs3 << std::setprecision(12) << Uvals[3*n+2];
+                    if(n < n_nodes-1) ofs3 << ",";
+                }
+                ofs3 << "," << (i+1) << "\n";
             }
         }
 
@@ -428,9 +555,9 @@ int main(int argc, char **argv) {
         filename = fea_dir + "/force_displacement.csv";
         std::ofstream ofs4(filename);
         if(ofs4){
-            ofs4<<"total_displacement,total_force\n";
+            ofs4 << "total_displacement,total_force\n";
             for(auto &p: fd_curve){
-                ofs4<<std::setprecision(12)<<p.first<<","<<p.second<<"\n";
+                ofs4 << std::setprecision(12) << p.first << "," << p.second << "\n";
             }
         }
     }

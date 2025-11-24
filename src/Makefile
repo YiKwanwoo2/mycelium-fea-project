@@ -15,7 +15,7 @@ FS_LIB     = -lstdc++fs
 TARGET     = fea_petsc.exe
 
 # Source file
-SRC        = fea_petsc.cpp
+SRC        = fea_petsc_v2.cpp
 
 
 

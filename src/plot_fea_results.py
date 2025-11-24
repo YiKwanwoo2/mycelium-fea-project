@@ -7,6 +7,20 @@ import matplotlib.pyplot as plt
 from matplotlib.collections import LineCollection
 from matplotlib.colors import Normalize
 
+E_mod = 2500  # Young's Modulus in MPa
+d = 0.0002  # mm
+t = 0.000001  # mm
+A = 3.14 * ((d / 2) ** 2 - (d / 2 - t) ** 2) # mm²
+# I = 3.14 * ( (d)**4 - (d - 2*t)**4 ) / 64  # mm^4
+# A = 3.14 * ((d / 2) ** 2) # mm²
+I = A*0.001  # mm^4
+N_STEPS = 100
+DISPLACEMENT_MAX = 0.06  # mm
+
+# Automatically set failure strain
+MAX_STRAIN = 0.018
+MAX_STRESS = E_mod * MAX_STRAIN
+
 def plot_network(nodes_csv, elems_csv, stress_row, active_row, out_png, max_stress=1.0):
     nodes = pd.read_csv(nodes_csv)
     elems = pd.read_csv(elems_csv)
@@ -51,7 +65,7 @@ def main(results_dir):
         stress_row = stress_df.iloc[i].values[:-1] if 'step' in stress_df.columns else stress_df.iloc[i].values
         active_row = active_df.iloc[i].values[:-1] if 'step' in active_df.columns else active_df.iloc[i].values
         out_png = os.path.join(fea_dir, 'pngs', f'fea_step_{i:03d}.png')
-        plot_network(nodes_csv, elems_csv, stress_row, active_row, out_png, max_stress=1.0)
+        plot_network(nodes_csv, elems_csv, stress_row, active_row, out_png, max_stress=MAX_STRESS)
 
     # Force-displacement plot
     plt.figure(figsize=(6,4))
