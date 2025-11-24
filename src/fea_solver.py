@@ -18,7 +18,7 @@ A = 3.14 * ((d / 2) ** 2 - (d / 2 - t) ** 2) # mm²
 # I = 3.14 * ( (d)**4 - (d - 2*t)**4 ) / 64  # mm^4
 # A = 3.14 * ((d / 2) ** 2) # mm²
 I = A*0.001  # mm^4
-N_STEPS = 40
+N_STEPS = 100
 DISPLACEMENT_MAX = 0.06  # mm
 
 # Automatically set failure strain
