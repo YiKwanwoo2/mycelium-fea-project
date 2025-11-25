@@ -1,0 +1,17 @@
+fea_petsc_solverAndPC.cpp: In function ‘int main(int, char**)’:
+fea_petsc_solverAndPC.cpp:381:29: error: ‘U’ was not declared in this scope
+  381 |         ierr = VecDuplicate(U, &F_react); CHKERRQ(ierr);
+      |                             ^
+fea_petsc_solverAndPC.cpp:440:21: error: ‘ksp’ was not declared in this scope
+  440 |         KSPDestroy(&ksp);
+      |                     ^~~
+make: *** [Makefile:28: fea_petsc_solverAndPC.exe] Error 1
+--------------------------------------------------------------------------
+prterun was unable to launch the specified application as it lacked
+permissions to execute an executable:
+
+   Executable: ./fea_petsc_solverAndPC.exe
+   Node: gl3027
+
+while attempting to start process rank 0.
+--------------------------------------------------------------------------

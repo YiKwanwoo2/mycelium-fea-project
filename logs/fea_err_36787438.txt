@@ -1,0 +1,14 @@
+fea_petsc_solverAndPC.cpp: In function ‘int main(int, char**)’:
+fea_petsc_solverAndPC.cpp:379:52: error: ‘U_final’ was not declared in this scope
+  379 |                         ierr = VecDuplicate(Uloc, &U_final); CHKERRQ(ierr);
+      |                                                    ^~~~~~~
+make: *** [Makefile:28: fea_petsc_solverAndPC.exe] Error 1
+--------------------------------------------------------------------------
+prterun was unable to launch the specified application as it lacked
+permissions to execute an executable:
+
+   Executable: ./fea_petsc_solverAndPC.exe
+   Node: gl3027
+
+while attempting to start process rank 0.
+--------------------------------------------------------------------------

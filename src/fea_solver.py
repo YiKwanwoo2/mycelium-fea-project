@@ -18,14 +18,14 @@ A = 3.14 * ((d / 2) ** 2 - (d / 2 - t) ** 2) # mm²
 # I = 3.14 * ( (d)**4 - (d - 2*t)**4 ) / 64  # mm^4
 # A = 3.14 * ((d / 2) ** 2) # mm²
 I = A*0.001  # mm^4
-N_STEPS = 100
-DISPLACEMENT_MAX = 0.06  # mm
+N_STEPS = 40
+DISPLACEMENT_MAX = 0.02  # mm
 
 # Automatically set failure strain
 MAX_STRAIN = 0.018
 MAX_STRESS = E_mod * MAX_STRAIN
 
-GRIP_LENGTH = 0.1  # mm
+GRIP_LENGTH = 1.5  # mm
 
 def bar_stiffness_bulk(p1s, p2s, E=E_mod, A=A, I=I):
     """
@@ -210,6 +210,9 @@ def fea_solver(results_dir, tol=GRIP_LENGTH):
     bot_nodes = nodes.loc[np.abs(nodes["y"] - y_min) < tol, "node_id"].values.astype(int)
     print(f"Top nodes: {len(top_nodes)}, Bottom nodes: {len(bot_nodes)}")
 
+    with open(os.path.join(fea_dir, "solve_runtime.txt"), "w") as f:
+        f.write(f"step, runtime_s\n")
+
     for step in range(N_STEPS):
         disp_factor = step / (N_STEPS - 1)
         dy_top = +DISPLACEMENT_MAX * disp_factor
@@ -241,6 +244,8 @@ def fea_solver(results_dir, tol=GRIP_LENGTH):
         known_dofs = np.array(list(disp_dofs.keys()))
         known_vals = np.array([disp_dofs[d] for d in known_dofs])
 
+        solve_start_time = time.time()
+
         # --- SOLVE ---
         try:
             U = solve_system(K, known_dofs, known_vals)
@@ -250,6 +255,11 @@ def fea_solver(results_dir, tol=GRIP_LENGTH):
 
         # --- Now safe to compute reactions ---
         F_react = K @ U
+
+        solve_end_time = time.time()
+        with open(os.path.join(fea_dir, "solve_runtime.txt"), "a") as f:
+            f.write(f"{step+1}, {solve_end_time - solve_start_time:.6f}\n")
+
         F_top = F_react[[3*n+1 for n in top_nodes]]
         total_force = F_top.sum()
         total_disp = dy_top - dy_bot

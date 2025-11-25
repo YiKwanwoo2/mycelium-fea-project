@@ -1,0 +1,45 @@
+mpicxx -std=c++17 -O3 -Wall -Wextra -Wpedantic -I/home/kwyi/petsc/include -I/home/kwyi/petsc/arch-linux-c-opt/include fea_petsc_solverAndPC.cpp -L/home/kwyi/petsc/arch-linux-c-opt/lib -lpetsc -Wl,-rpath,/home/kwyi/petsc/arch-linux-c-opt/lib -lstdc++fs -o fea_petsc_solverAndPC.exe
+🔧 Running FEA on geometry from ../results/sim_20251117_181147_cpp
+Top nodes: 1682, Bottom nodes: 1315
+➡️  Step 1/40 | dy_top=0.000000, dy_bot=-0.000000
+➡️  Step 2/40 | dy_top=0.000513, dy_bot=-0.000513
+➡️  Step 3/40 | dy_top=0.001026, dy_bot=-0.001026
+➡️  Step 4/40 | dy_top=0.001538, dy_bot=-0.001538
+➡️  Step 5/40 | dy_top=0.002051, dy_bot=-0.002051
+➡️  Step 6/40 | dy_top=0.002564, dy_bot=-0.002564
+➡️  Step 7/40 | dy_top=0.003077, dy_bot=-0.003077
+➡️  Step 8/40 | dy_top=0.003590, dy_bot=-0.003590
+➡️  Step 9/40 | dy_top=0.004103, dy_bot=-0.004103
+➡️  Step 10/40 | dy_top=0.004615, dy_bot=-0.004615
+➡️  Step 11/40 | dy_top=0.005128, dy_bot=-0.005128
+➡️  Step 12/40 | dy_top=0.005641, dy_bot=-0.005641
+➡️  Step 13/40 | dy_top=0.006154, dy_bot=-0.006154
+➡️  Step 14/40 | dy_top=0.006667, dy_bot=-0.006667
+➡️  Step 15/40 | dy_top=0.007179, dy_bot=-0.007179
+➡️  Step 16/40 | dy_top=0.007692, dy_bot=-0.007692
+➡️  Step 17/40 | dy_top=0.008205, dy_bot=-0.008205
+➡️  Step 18/40 | dy_top=0.008718, dy_bot=-0.008718
+➡️  Step 19/40 | dy_top=0.009231, dy_bot=-0.009231
+➡️  Step 20/40 | dy_top=0.009744, dy_bot=-0.009744
+➡️  Step 21/40 | dy_top=0.010256, dy_bot=-0.010256
+➡️  Step 22/40 | dy_top=0.010769, dy_bot=-0.010769
+➡️  Step 23/40 | dy_top=0.011282, dy_bot=-0.011282
+➡️  Step 24/40 | dy_top=0.011795, dy_bot=-0.011795
+➡️  Step 25/40 | dy_top=0.012308, dy_bot=-0.012308
+➡️  Step 26/40 | dy_top=0.012821, dy_bot=-0.012821
+➡️  Step 27/40 | dy_top=0.013333, dy_bot=-0.013333
+➡️  Step 28/40 | dy_top=0.013846, dy_bot=-0.013846
+➡️  Step 29/40 | dy_top=0.014359, dy_bot=-0.014359
+➡️  Step 30/40 | dy_top=0.014872, dy_bot=-0.014872
+➡️  Step 31/40 | dy_top=0.015385, dy_bot=-0.015385
+➡️  Step 32/40 | dy_top=0.015897, dy_bot=-0.015897
+➡️  Step 33/40 | dy_top=0.016410, dy_bot=-0.016410
+➡️  Step 34/40 | dy_top=0.016923, dy_bot=-0.016923
+➡️  Step 35/40 | dy_top=0.017436, dy_bot=-0.017436
+➡️  Step 36/40 | dy_top=0.017949, dy_bot=-0.017949
+➡️  Step 37/40 | dy_top=0.018462, dy_bot=-0.018462
+➡️  Step 38/40 | dy_top=0.018974, dy_bot=-0.018974
+➡️  Step 39/40 | dy_top=0.019487, dy_bot=-0.019487
+➡️  Step 40/40 | dy_top=0.020000, dy_bot=-0.020000
+✅ FEA completed. Results saved to ../results/sim_20251117_181147_cpp/fea_results
+Time taken by myLongRunningFunction: 980411830 microseconds

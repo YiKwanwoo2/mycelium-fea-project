@@ -8,4 +8,15 @@ module load lapack
 module load openblas
 module load openmpi
 
+module load gcc
+module load python
+module load numpy
+module load scipy
+module load pandas
+module load matplotlib
+module load lapack
+module load openblas
+module load openmpi
+
+
 mpirun -np 4 ./fea_petsc /home/kwyi/ners570_project/mycelium-fea-project/results/sim_20251122_155110

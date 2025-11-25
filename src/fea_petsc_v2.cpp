@@ -1,6 +1,6 @@
 // fea_petsc_fixed.cpp
 // PETSc-based FEA of rod/beam network (3 DOF per node).
-// Updated to match behavior of the provided Python solver.
+// Updated to use CHKERRQ for PETSc calls and keep C++ try/catch for non-PETSc errors.
 
 #include <petscksp.h>
 #include <iostream>
@@ -26,8 +26,8 @@ using std::vector;
 static const double E_mod = 2500.0;        // MPa
 static const double d = 0.0002;            // mm
 static const double t_shell = 0.000001;    // mm
-static const double A_area = 3.14 * ((d/2.0)*(d/2.0) - (d/2.0 - t_shell)*(d/2.0 - t_shell)); // mm^2 (closer to Python)
-static const double I_moment = A_area * 0.001; // mm^4 (approx, same idea as Python)
+static const double A_area = 3.14 * ((d/2.0)*(d/2.0) - (d/2.0 - t_shell)*(d/2.0 - t_shell)); // mm^2
+static const double I_moment = A_area * 0.001; // mm^4 (approx)
 static const int N_STEPS = 40;                     // match Python default
 static const double DISPLACEMENT_MAX = 0.02; // mm
 static const double MAX_STRAIN = 0.018;
@@ -152,10 +152,7 @@ static void element_stiffness(const double p1[3], const double p2[3], double Ke_
 int main(int argc, char **argv) {
     PetscErrorCode ierr;
     ierr = PetscInitialize(&argc, &argv, nullptr, nullptr);
-    if(ierr){
-        PetscPrintf(PETSC_COMM_WORLD, "Error in PetscInitialize: %d\n", ierr);
-        return 1;
-    }
+    CHKERRQ(ierr);
 
     if(argc < 2){
         PetscPrintf(PETSC_COMM_WORLD, "Usage: %s <results_dir>\n", argv[0]);
@@ -242,16 +239,16 @@ int main(int argc, char **argv) {
 
             try {
                 // --- Assemble physical stiffness K_phys (only active elements) ---
-                ierr = MatCreate(PETSC_COMM_WORLD, &K_phys); if(ierr) throw std::runtime_error("MatCreate failed");
-                ierr = MatSetSizes(K_phys, PETSC_DECIDE, PETSC_DECIDE, n_dof, n_dof); if(ierr) throw std::runtime_error("MatSetSizes failed");
-                ierr = MatSetFromOptions(K_phys); if(ierr) throw std::runtime_error("MatSetFromOptions failed");
-                ierr = MatSetUp(K_phys); if(ierr) throw std::runtime_error("MatSetUp failed");
+                ierr = MatCreate(PETSC_COMM_WORLD, &K_phys); CHKERRQ(ierr);
+                ierr = MatSetSizes(K_phys, PETSC_DECIDE, PETSC_DECIDE, n_dof, n_dof); CHKERRQ(ierr);
+                ierr = MatSetFromOptions(K_phys); CHKERRQ(ierr);
+                ierr = MatSetUp(K_phys); CHKERRQ(ierr);
 
                 // RHS vector F (all zeros)
-                ierr = VecCreate(PETSC_COMM_WORLD, &F); if(ierr) throw std::runtime_error("VecCreate failed");
-                ierr = VecSetSizes(F, PETSC_DECIDE, n_dof); if(ierr) throw std::runtime_error("VecSetSizes failed");
-                ierr = VecSetFromOptions(F); if(ierr) throw std::runtime_error("VecSetFromOptions failed");
-                ierr = VecSet(F, 0.0); if(ierr) throw std::runtime_error("VecSet failed");
+                ierr = VecCreate(PETSC_COMM_WORLD, &F); CHKERRQ(ierr);
+                ierr = VecSetSizes(F, PETSC_DECIDE, n_dof); CHKERRQ(ierr);
+                ierr = VecSetFromOptions(F); CHKERRQ(ierr);
+                ierr = VecSet(F, 0.0); CHKERRQ(ierr);
 
                 // Assemble element contributions into K_phys
                 for(const auto &e : elems){
@@ -270,17 +267,16 @@ int main(int argc, char **argv) {
                         for(int j=0;j<6;j++){
                             double val = Ke[i*6 + j];
                             if(std::abs(val)<1e-18) continue;
-                            ierr = MatSetValue(K_phys, dof[i], dof[j], (PetscScalar)val, ADD_VALUES);
-                            if(ierr) throw std::runtime_error("MatSetValue failed");
+                            ierr = MatSetValue(K_phys, dof[i], dof[j], (PetscScalar)val, ADD_VALUES); CHKERRQ(ierr);
                         }
                     }
                 }
 
-                ierr = MatAssemblyBegin(K_phys, MAT_FINAL_ASSEMBLY); if(ierr) throw std::runtime_error("MatAssemblyBegin failed");
-                ierr = MatAssemblyEnd(K_phys, MAT_FINAL_ASSEMBLY); if(ierr) throw std::runtime_error("MatAssemblyEnd failed");
+                ierr = MatAssemblyBegin(K_phys, MAT_FINAL_ASSEMBLY); CHKERRQ(ierr);
+                ierr = MatAssemblyEnd(K_phys, MAT_FINAL_ASSEMBLY); CHKERRQ(ierr);
 
                 // Duplicate physical K to K_mod (we'll apply BCs to K_mod and use it for the solver)
-                ierr = MatDuplicate(K_phys, MAT_COPY_VALUES, &K_mod); if(ierr) throw std::runtime_error("MatDuplicate failed");
+                ierr = MatDuplicate(K_phys, MAT_COPY_VALUES, &K_mod); CHKERRQ(ierr);
 
                 // Dirichlet BCs (collect indices as PetscInt)
                 std::vector<PetscInt> known_dofs_idx;
@@ -300,83 +296,113 @@ int main(int argc, char **argv) {
                     known_dofs_idx.push_back((PetscInt)(3*idx + 2)); known_vals.push_back((PetscScalar)0.0);
                 }
 
-                // Duplicate F to create b and set prescribed entries
-                ierr = VecDuplicate(F, &b); if(ierr) throw std::runtime_error("VecDuplicate failed");
-                ierr = VecCopy(F, b); if(ierr) throw std::runtime_error("VecCopy failed");
+                // Create b (copy of F) and set prescribed entries
+                ierr = VecDuplicate(F, &b); CHKERRQ(ierr);
+                ierr = VecCopy(F, b); CHKERRQ(ierr);
 
                 if(!known_dofs_idx.empty()){
-                    ierr = VecSetValues(b, (PetscInt)known_dofs_idx.size(), known_dofs_idx.data(), known_vals.data(), INSERT_VALUES);
-                    if(ierr) throw std::runtime_error("VecSetValues failed");
+                    ierr = VecSetValues(b, (PetscInt)known_dofs_idx.size(), known_dofs_idx.data(), known_vals.data(), INSERT_VALUES); CHKERRQ(ierr);
                 }
-                ierr = VecAssemblyBegin(b); if(ierr) throw std::runtime_error("VecAssemblyBegin b failed");
-                ierr = VecAssemblyEnd(b); if(ierr) throw std::runtime_error("VecAssemblyEnd b failed");
+                ierr = VecAssemblyBegin(b); CHKERRQ(ierr);
+                ierr = VecAssemblyEnd(b); CHKERRQ(ierr);
 
                 // Apply BCs to K_mod (not K_phys)
-                // after MatAssemblyEnd(K_phys)
-
                 // 1) build x_known vector with prescribed displacements
-                Vec x_known, tmp;
-                ierr = VecDuplicate(F, &x_known); CHKERRABORT(PETSC_COMM_WORLD, ierr);
-                ierr = VecSet(x_known, 0.0); CHKERRABORT(PETSC_COMM_WORLD, ierr);
+                Vec x_known = nullptr, tmp = nullptr;
+                ierr = VecDuplicate(F, &x_known); CHKERRQ(ierr);
+                ierr = VecSet(x_known, 0.0); CHKERRQ(ierr);
                 if(!known_dofs_idx.empty()){
-                    ierr = VecSetValues(x_known, (PetscInt)known_dofs_idx.size(), known_dofs_idx.data(), known_vals.data(), INSERT_VALUES); CHKERRABORT(PETSC_COMM_WORLD, ierr);
+                    ierr = VecSetValues(x_known, (PetscInt)known_dofs_idx.size(), known_dofs_idx.data(), known_vals.data(), INSERT_VALUES); CHKERRQ(ierr);
                 }
-                ierr = VecAssemblyBegin(x_known); CHKERRABORT(PETSC_COMM_WORLD, ierr);
-                ierr = VecAssemblyEnd(x_known); CHKERRABORT(PETSC_COMM_WORLD, ierr);
+                ierr = VecAssemblyBegin(x_known); CHKERRQ(ierr);
+                ierr = VecAssemblyEnd(x_known); CHKERRQ(ierr);
 
                 // 2) tmp = K_phys * x_known  (tmp_i = sum_j K_ij * x_known_j)
-                ierr = VecDuplicate(F, &tmp); CHKERRABORT(PETSC_COMM_WORLD, ierr);
-                ierr = MatMult(K_phys, x_known, tmp); CHKERRABORT(PETSC_COMM_WORLD, ierr);
+                ierr = VecDuplicate(F, &tmp); CHKERRQ(ierr);
+                ierr = MatMult(K_phys, x_known, tmp); CHKERRQ(ierr);
 
                 // 3) b = -tmp  (make RHS for free DOFs equal to -K_fk * known_vals)
-                ierr = VecScale(tmp, -1.0); CHKERRABORT(PETSC_COMM_WORLD, ierr);
-                ierr = VecDuplicate(tmp, &b); CHKERRABORT(PETSC_COMM_WORLD, ierr);
-                ierr = VecCopy(tmp, b); CHKERRABORT(PETSC_COMM_WORLD, ierr);
+                ierr = VecCopy(tmp, b); CHKERRQ(ierr);
+                ierr = VecScale(b, -1.0); CHKERRQ(ierr);
 
                 // 4) overwrite known rows of b with the actual prescribed values
                 if(!known_dofs_idx.empty()){
-                    ierr = VecSetValues(b, (PetscInt)known_dofs_idx.size(), known_dofs_idx.data(), known_vals.data(), INSERT_VALUES); CHKERRABORT(PETSC_COMM_WORLD, ierr);
+                    ierr = VecSetValues(b, (PetscInt)known_dofs_idx.size(), known_dofs_idx.data(), known_vals.data(), INSERT_VALUES); CHKERRQ(ierr);
                 }
-                ierr = VecAssemblyBegin(b); CHKERRABORT(PETSC_COMM_WORLD, ierr);
-                ierr = VecAssemblyEnd(b); CHKERRABORT(PETSC_COMM_WORLD, ierr);
+                ierr = VecAssemblyBegin(b); CHKERRQ(ierr);
+                ierr = VecAssemblyEnd(b); CHKERRQ(ierr);
 
                 // 5) Now zero rows/cols in K_mod and solve
-                ierr = MatDuplicate(K_phys, MAT_COPY_VALUES, &K_mod); CHKERRABORT(PETSC_COMM_WORLD, ierr);
                 if(!known_dofs_idx.empty()){
-                    ierr = MatZeroRowsColumns(K_mod, (PetscInt)known_dofs_idx.size(), known_dofs_idx.data(), 1.0, NULL, b); CHKERRABORT(PETSC_COMM_WORLD, ierr);
+                    ierr = MatZeroRowsColumns(K_mod, (PetscInt)known_dofs_idx.size(), known_dofs_idx.data(), 1.0, NULL, b); CHKERRQ(ierr);
                 }
 
+                ierr = MatAssemblyBegin(K_mod, MAT_FINAL_ASSEMBLY); CHKERRQ(ierr);
+                ierr = MatAssemblyEnd(K_mod, MAT_FINAL_ASSEMBLY); CHKERRQ(ierr);
+                
+                // --- BEGIN: ensure non-zero diagonals on K_mod to avoid ILU failure ---
+                // (Place this AFTER MatAssemblyEnd(K_mod, MAT_FINAL_ASSEMBLY) and BEFORE KSPCreate)
+                {
+                    // get diagonal into a vector
+                    Vec diag;
+                    ierr = VecCreate(PETSC_COMM_WORLD, &diag); CHKERRQ(ierr);
+                    ierr = VecSetSizes(diag, PETSC_DECIDE, n_dof); CHKERRQ(ierr);
+                    ierr = VecSetFromOptions(diag); CHKERRQ(ierr);
+                    ierr = MatGetDiagonal(K_mod, diag); CHKERRQ(ierr);
 
-                ierr = MatAssemblyBegin(K_mod, MAT_FINAL_ASSEMBLY); if(ierr) throw std::runtime_error("MatAssemblyBegin after BC failed");
-                ierr = MatAssemblyEnd(K_mod, MAT_FINAL_ASSEMBLY); if(ierr) throw std::runtime_error("MatAssemblyEnd after BC failed");
+                    // fetch values
+                    std::vector<PetscInt> idx(n_dof);
+                    std::vector<PetscScalar> dvals(n_dof);
+                    for(int ii=0; ii<n_dof; ++ii) idx[ii] = ii;
+                    ierr = VecGetValues(diag, n_dof, idx.data(), dvals.data()); CHKERRQ(ierr);
 
-                ierr = VecAssemblyBegin(b); if(ierr) throw std::runtime_error("VecAssemblyBegin b after BC failed");
-                ierr = VecAssemblyEnd(b); if(ierr) throw std::runtime_error("VecAssemblyEnd b after BC failed");
+                    const double diag_eps = 1e-14;   // treat anything smaller as zero
+                    const PetscScalar fill_diag = 1e-8; // small diagonal to insert (adjust if needed)
+
+                    bool any_zero = false;
+                    for(int ii=0; ii<n_dof; ++ii){
+                        if(std::abs((double)dvals[ii]) < diag_eps){
+                            // Insert a small diagonal value. Use INSERT_VALUES to overwrite (row might not exist)
+                            ierr = MatSetValue(K_mod, ii, ii, fill_diag, INSERT_VALUES); CHKERRQ(ierr);
+                            any_zero = true;
+                        }
+                    }
+
+                    if(any_zero){
+                        ierr = MatAssemblyBegin(K_mod, MAT_FINAL_ASSEMBLY); CHKERRQ(ierr);
+                        ierr = MatAssemblyEnd(K_mod, MAT_FINAL_ASSEMBLY); CHKERRQ(ierr);
+                    }
+
+                    if(diag){ VecDestroy(&diag); diag = nullptr; }
+                }
+                // --- END: ensure non-zero diagonals ---
+
+                ierr = VecAssemblyBegin(b); CHKERRQ(ierr);
+                ierr = VecAssemblyEnd(b); CHKERRQ(ierr);
 
                 // Solution vector
-                ierr = VecCreate(PETSC_COMM_WORLD, &U); if(ierr) throw std::runtime_error("VecCreate U failed");
-                ierr = VecSetSizes(U, PETSC_DECIDE, n_dof); if(ierr) throw std::runtime_error("VecSetSizes U failed");
-                ierr = VecSetFromOptions(U); if(ierr) throw std::runtime_error("VecSetFromOptions U failed");
-                ierr = VecSet(U, 0.0); if(ierr) throw std::runtime_error("VecSet U failed");
+                ierr = VecCreate(PETSC_COMM_WORLD, &U); CHKERRQ(ierr);
+                ierr = VecSetSizes(U, PETSC_DECIDE, n_dof); CHKERRQ(ierr);
+                ierr = VecSetFromOptions(U); CHKERRQ(ierr);
+                ierr = VecSet(U, 0.0); CHKERRQ(ierr);
 
                 // Solve K_mod U = b
-                ierr = KSPCreate(PETSC_COMM_WORLD, &ksp); if(ierr) throw std::runtime_error("KSPCreate failed");
-                ierr = KSPSetOperators(ksp, K_mod, K_mod); if(ierr) throw std::runtime_error("KSPSetOperators failed");
-                ierr = KSPSetFromOptions(ksp); if(ierr) throw std::runtime_error("KSPSetFromOptions failed");
-                ierr = KSPSetUp(ksp); if(ierr) throw std::runtime_error("KSPSetUp failed");
+                ierr = KSPCreate(PETSC_COMM_WORLD, &ksp); CHKERRQ(ierr);
+                ierr = KSPSetOperators(ksp, K_mod, K_mod); CHKERRQ(ierr);
+                ierr = KSPSetFromOptions(ksp); CHKERRQ(ierr);
+                ierr = KSPSetUp(ksp); CHKERRQ(ierr);
 
-                ierr = KSPSolve(ksp, b, U); if(ierr) throw std::runtime_error("KSPSolve failed");
+                ierr = KSPSolve(ksp, b, U); CHKERRQ(ierr);
 
                 // Compute reactions using physical stiffness: F_react = K_phys * U
-                ierr = VecDuplicate(b, &F_react); if(ierr) throw std::runtime_error("VecDuplicate F_react failed");
-                ierr = MatMult(K_phys, U, F_react); if(ierr) throw std::runtime_error("MatMult F_react failed");
+                ierr = VecDuplicate(b, &F_react); CHKERRQ(ierr);
+                ierr = MatMult(K_phys, U, F_react); CHKERRQ(ierr);
 
                 // Gather U locally in a batch
                 std::vector<PetscInt> all_idx(n_dof);
                 for(int ii=0; ii<n_dof; ++ii) all_idx[ii] = ii;
                 std::vector<PetscScalar> all_vals(n_dof);
-                ierr = VecGetValues(U, n_dof, all_idx.data(), all_vals.data());
-                if(ierr) throw std::runtime_error("VecGetValues failed for U");
+                ierr = VecGetValues(U, n_dof, all_idx.data(), all_vals.data()); CHKERRQ(ierr);
                 std::vector<double> Uvals(n_dof);
                 for(int ii=0; ii<n_dof; ++ii) Uvals[ii] = (double)all_vals[ii];
 
@@ -386,8 +412,7 @@ int main(int argc, char **argv) {
                 for(int idx : top_nodes_idx) top_reac_idx.push_back((PetscInt)(3*idx + 1));
                 std::vector<PetscScalar> top_reac_vals(top_reac_idx.size());
                 if(!top_reac_idx.empty()){
-                    ierr = VecGetValues(F_react, (PetscInt)top_reac_idx.size(), top_reac_idx.data(), top_reac_vals.data());
-                    if(ierr) throw std::runtime_error("VecGetValues F_react failed");
+                    ierr = VecGetValues(F_react, (PetscInt)top_reac_idx.size(), top_reac_idx.data(), top_reac_vals.data()); CHKERRQ(ierr);
                 }
                 double total_force = 0.0;
                 for(size_t ii=0; ii<top_reac_vals.size(); ++ii) total_force += (double)top_reac_vals[ii];
@@ -429,16 +454,12 @@ int main(int argc, char **argv) {
                 int n_active=0; for(const auto &e: elems) if(e.active) ++n_active;
                 if(n_active==0){
                     PetscPrintf(PETSC_COMM_WORLD, "All elements failed at step %d. Stopping early.\n", step+1);
-                    // cleanup of PETSc objects will happen below
-                    // still break main time loop
-                    // but we must cleanup PETSc objects before break
-                    // (handled by subsequent cleanup)
-                    // mark a flag? just break here
-                    // destroy below
-                    // break out of step loop
-                    // we'll break after cleanup below to ensure MatDestroy
-                    // but here we break now and let cleanup follow
+                    // cleanup of PETSc objects will happen below; break after cleanup stage
                 }
+
+                // cleanup temporary vectors
+                if(x_known){ VecDestroy(&x_known); x_known = nullptr; }
+                if(tmp){ VecDestroy(&tmp); tmp = nullptr; }
 
             } catch(const std::exception &e){
                 PetscPrintf(PETSC_COMM_WORLD, "Step %d error: %s\n", step+1, e.what());

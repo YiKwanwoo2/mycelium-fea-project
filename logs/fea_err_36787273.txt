@@ -1,0 +1,9 @@
+--------------------------------------------------------------------------
+prterun was unable to launch the specified application as it lacked
+permissions to execute an executable:
+
+   Executable: ./fea_petsc_solverAndPC
+   Node: gl3054
+
+while attempting to start process rank 0.
+--------------------------------------------------------------------------

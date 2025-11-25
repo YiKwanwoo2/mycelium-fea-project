@@ -1,0 +1,1 @@
+mpicxx -std=c++17 -O3 -Wall -Wextra -Wpedantic -I/home/kwyi/petsc/include -I/home/kwyi/petsc/arch-linux-c-opt/include fea_petsc_solverAndPC.cpp -L/home/kwyi/petsc/arch-linux-c-opt/lib -lpetsc -Wl,-rpath,/home/kwyi/petsc/arch-linux-c-opt/lib -lstdc++fs -o fea_petsc_solverAndPC.exe

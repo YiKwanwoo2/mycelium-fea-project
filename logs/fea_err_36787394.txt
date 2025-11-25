@@ -1,0 +1,17 @@
+fea_petsc_solverAndPC.cpp: In function ‘int main(int, char**)’:
+fea_petsc_solverAndPC.cpp:404:33: error: ‘U’ was not declared in this scope
+  404 |             ierr = VecGetValues(U, 1, (PetscInt*)&i, &v); CHKERRQ(ierr);
+      |                                 ^
+fea_petsc_solverAndPC.cpp:446:21: error: ‘U’ was not declared in this scope
+  446 |         VecDestroy(&U);
+      |                     ^
+make: *** [Makefile:28: fea_petsc_solverAndPC.exe] Error 1
+--------------------------------------------------------------------------
+prterun was unable to launch the specified application as it lacked
+permissions to execute an executable:
+
+   Executable: ./fea_petsc_solverAndPC.exe
+   Node: gl3054
+
+while attempting to start process rank 0.
+--------------------------------------------------------------------------
