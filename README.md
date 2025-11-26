@@ -10,10 +10,6 @@ module load openmpi
 
 module load gcc
 module load python
-module load numpy
-module load scipy
-module load pandas
-module load matplotlib
 module load lapack
 module load openblas
 module load openmpi

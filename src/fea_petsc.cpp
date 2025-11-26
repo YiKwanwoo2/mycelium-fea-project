@@ -1,370 +1,390 @@
 // fea_petsc.cpp
-// PETSc-based FEA (3 DOF per node) translated from user's Python solver
-//
-// Build (example):
-// mpicxx -O3 -std=c++17 -I${PETSC_DIR}/include -I${PETSC_DIR}/${PETSC_ARCH}/include fea_petsc.cpp -L${PETSC_DIR}/${PETSC_ARCH}/lib -lpetsc -o fea_petsc
-//
-// Run (example):
-// mpirun -n 4 ./fea_petsc
-//
-// Input (expected):
-// ../results/nodes.csv    (columns: node_id,x,y,z ...)
-// ../results/elements.csv (columns: elem_id,n1,n2 ...)
-//
-// Outputs written to ../results/fea_results/
+// PETSc-based translation of the provided Python FEA solver.
+// Compile with mpicxx and link against PETSc. Example compile shown after the code.
 
 #include <petscksp.h>
-#include <mpi.h>
-
-#include <vector>
-#include <string>
+#include <iostream>
 #include <fstream>
 #include <sstream>
-#include <iostream>
+#include <vector>
+#include <string>
 #include <cmath>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <unistd.h>
 #include <iomanip>
 #include <algorithm>
+#include <array>
+#include <chrono>
 
-struct Node {
-    int id;
-    double x,y,z;
-};
-
-struct Elem {
-    int id;
-    int n1, n2;
-};
-
-static constexpr double E_mod = 2500.0; // MPa
-static constexpr double d = 0.0002;     // mm
-static constexpr double t = 0.000001;   // mm
-static const double A = 3.141592653589793 * ( (d/2.0)*(d/2.0) - (d/2.0 - t)*(d/2.0 - t) );
-static const double I = A * 0.001;
-static const int N_STEPS = 100;
-static const double DISPLACEMENT_MAX = 0.06; // mm
+// ----------------------------
+// Material & Simulation Parameters (kept same as Python)
+// ----------------------------
+static const double E_mod = 2500.0;          // MPa
+static const double d_param = 0.0002;        // mm
+static const double t_param = 0.000001;      // mm
+static const double A_param = 3.14 * ( std::pow(d_param/2.0,2) - std::pow(d_param/2.0 - t_param,2) ); // mm^2
+static const double I_param = A_param * 0.001; // mm^4 (as in Python)
+static const int N_STEPS = 40;
+static const double DISPLACEMENT_MAX = 0.02; // mm
 static const double MAX_STRAIN = 0.018;
 static const double MAX_STRESS = E_mod * MAX_STRAIN;
-static const double GRIP_LENGTH = 0.1; // mm
+static const double GRIP_LENGTH = 1.5;       // mm
 
-// utility: trim
-static inline std::string trim(const std::string &s) {
-    auto a = s.find_first_not_of(" \t\r\n");
-    if (a==std::string::npos) return "";
-    auto b = s.find_last_not_of(" \t\r\n");
-    return s.substr(a, b - a + 1);
-}
+// ----------------------------
+// Utility CSV readers
+// nodes.csv expected columns: node_id,x,y,z  (node_id numeric but we will index by row order)
+// elements.csv expected columns: elem_id,n1,n2
+// ----------------------------
+struct Node { int id; double x,y,z; };
+struct Elem { int id; int n1, n2; };
 
-std::vector<Node> read_nodes(const std::string &path) {
+static std::vector<Node> read_nodes_csv(const std::string &path) {
     std::vector<Node> nodes;
-    std::ifstream f(path);
-    if (!f.is_open()) {
-        PetscPrintf(PETSC_COMM_WORLD, "Error: cannot open %s\n", path.c_str());
-        return nodes;
-    }
-
+    std::ifstream ifs(path);
+    if (!ifs) throw std::runtime_error("Failed to open nodes file: " + path);
     std::string line;
     // read header
-    if (!std::getline(f, line)) return nodes;
-    std::vector<std::string> heads;
-    {
-        std::istringstream ss(line);
-        std::string tok;
-        while (std::getline(ss, tok, ',')) heads.push_back(trim(tok));
-    }
-    // find indices for node_id,x,y,z
-    int idx_id=-1, idx_x=-1, idx_y=-1, idx_z=-1;
-    for (size_t i=0;i<heads.size();++i){
-        std::string h=heads[i];
-        if (h == "node_id") idx_id = i;
-        if (h == "x") idx_x = i;
-        if (h == "y") idx_y = i;
-        if (h == "z") idx_z = i;
-    }
-
-    while (std::getline(f, line)) {
-        if (trim(line).empty()) continue;
-        std::istringstream ss(line);
-        std::string tok;
-        std::vector<std::string> cols;
-        while (std::getline(ss, tok, ',')) cols.push_back(trim(tok));
-        Node n{};
-        if (idx_id>=0) n.id = std::stoi(cols[idx_id]);
-        else n.id = (int)nodes.size();
-        n.x = (idx_x>=0) ? std::stod(cols[idx_x]) : 0.0;
-        n.y = (idx_y>=0) ? std::stod(cols[idx_y]) : 0.0;
-        n.z = (idx_z>=0) ? std::stod(cols[idx_z]) : 0.0;
-        nodes.push_back(n);
+    std::getline(ifs, line);
+    while (std::getline(ifs,line)) {
+        if (line.size()==0) continue;
+        std::stringstream ss(line);
+        std::string token;
+        Node node;
+        // assume order: node_id,x,y,z (or at least first 4 columns)
+        std::getline(ss, token, ','); node.id = std::stoi(token);
+        std::getline(ss, token, ','); node.x = std::stod(token);
+        std::getline(ss, token, ','); node.y = std::stod(token);
+        std::getline(ss, token, ','); node.z = std::stod(token);
+        nodes.push_back(node);
     }
     return nodes;
 }
 
-std::vector<Elem> read_elems(const std::string &path) {
+static std::vector<Elem> read_elems_csv(const std::string &path) {
     std::vector<Elem> elems;
-    std::ifstream f(path);
-    if (!f.is_open()) {
-        PetscPrintf(PETSC_COMM_WORLD, "Error: cannot open %s\n", path.c_str());
-        return elems;
-    }
+    std::ifstream ifs(path);
+    if (!ifs) throw std::runtime_error("Failed to open elements file: " + path);
     std::string line;
-    if (!std::getline(f,line)) return elems;
-    std::vector<std::string> heads;
-    {
-        std::istringstream ss(line);
-        std::string tok;
-        while (std::getline(ss, tok, ',')) heads.push_back(trim(tok));
-    }
-    int idx_id=-1, idx_n1=-1, idx_n2=-1;
-    for (size_t i=0;i<heads.size();++i){
-        std::string h=heads[i];
-        if (h=="elem_id") idx_id=i;
-        if (h=="n1") idx_n1=i;
-        if (h=="n2") idx_n2=i;
-    }
-
-    while (std::getline(f,line)) {
-        if (trim(line).empty()) continue;
-        std::istringstream ss(line);
-        std::string tok;
-        std::vector<std::string> cols;
-        while (std::getline(ss,tok,',')) cols.push_back(trim(tok));
-        Elem e{};
-        if (idx_id>=0) e.id = std::stoi(cols[idx_id]);
-        else e.id = (int)elems.size();
-        e.n1 = (idx_n1>=0) ? std::stoi(cols[idx_n1]) : 0;
-        e.n2 = (idx_n2>=0) ? std::stoi(cols[idx_n2]) : 0;
+    std::getline(ifs,line);
+    while (std::getline(ifs,line)) {
+        if (line.size()==0) continue;
+        std::stringstream ss(line);
+        std::string token;
+        Elem e;
+        // assume order: elem_id,n1,n2
+        std::getline(ss, token, ','); e.id = std::stoi(token);
+        std::getline(ss, token, ','); e.n1 = std::stoi(token);
+        std::getline(ss, token, ','); e.n2 = std::stoi(token);
         elems.push_back(e);
     }
     return elems;
 }
 
-// Create 6x6 element stiffness matrix (axial + "perp" bending) like Python version
-void element_stiffness(const double p1[3], const double p2[3], double Ke[6][6], double &Lout) {
-    double Lvec[3];
-    for (int i=0;i<3;++i) Lvec[i] = p2[i] - p1[i];
-    double L = std::sqrt(Lvec[0]*Lvec[0] + Lvec[1]*Lvec[1] + Lvec[2]*Lvec[2]);
+// ----------------------------
+// Compute element stiffness matrix (6x6) for a bar-like element with axial + a simple 'perp' bending term.
+// Mirrors Python's bar_stiffness_bulk element-by-element.
+// ----------------------------
+static void element_stiffness_6x6(const double p1[3], const double p2[3], double Ke[6][6], double &Lout) {
+    double vx = p2[0] - p1[0];
+    double vy = p2[1] - p1[1];
+    double vz = p2[2] - p1[2];
+    double L = std::sqrt(vx*vx + vy*vy + vz*vz);
     if (L < 1e-12) L = 1e-12;
     Lout = L;
-    double n[3];
-    for (int i=0;i<3;++i) n[i] = Lvec[i]/L;
+    double nx = vx / L;
+    double ny = vy / L;
+    double nz = vz / L;
 
-    double k_axial = (E_mod * A) / L;
-
-    // Build TT = n * n^T
+    // Build outer product TT = n * n^T (3x3)
     double TT[3][3];
-    for (int i=0;i<3;++i) for (int j=0;j<3;++j) TT[i][j] = n[i]*n[j];
+    TT[0][0] = nx*nx; TT[0][1] = nx*ny; TT[0][2] = nx*nz;
+    TT[1][0] = ny*nx; TT[1][1] = ny*ny; TT[1][2] = ny*nz;
+    TT[2][0] = nz*nx; TT[2][1] = nz*ny; TT[2][2] = nz*nz;
 
     // perp = I - TT
     double perp[3][3];
-    for (int i=0;i<3;++i) for (int j=0;j<3;++j) perp[i][j] = (i==j?1.0:0.0) - TT[i][j];
-
-    double k_bend_val = 12.0 * E_mod * I / (L*L*L);
-
-    // initialize Ke to zeros
-    for (int i=0;i<6;++i) for (int j=0;j<6;++j) Ke[i][j] = 0.0;
-
-    // axial contribution into blocks
-    for (int ia=0; ia<3; ++ia) {
-        for (int ja=0; ja<3; ++ja) {
-            double v = TT[ia][ja] * k_axial;
-            Ke[ia][ja] += v;
-            Ke[ia][ja+3] += -v;
-            Ke[ia+3][ja] += -v;
-            Ke[ia+3][ja+3] += v;
+    for (int i=0;i<3;i++){
+        for (int j=0;j<3;j++){
+            perp[i][j] = (i==j?1.0:0.0) - TT[i][j];
         }
     }
 
-    // bending contribution similarly with perp
-    for (int ia=0; ia<3; ++ia) {
-        for (int ja=0; ja<3; ++ja) {
-            double v = perp[ia][ja] * k_bend_val;
-            Ke[ia][ja] += v;
-            Ke[ia][ja+3] += -v;
-            Ke[ia+3][ja] += -v;
-            Ke[ia+3][ja+3] += v;
+    double k_axial = (E_mod * A_param) / L;           // scalar
+    double k_bend  = (12.0 * E_mod * I_param) / (L*L*L);
+
+    // Initialize Ke to zero
+    for (int i=0;i<6;i++) for (int j=0;j<6;j++) Ke[i][j] = 0.0;
+
+    // Fill axial contribution: blocks (0:3,0:3)=TT, (0:3,3:6)=-TT, etc.
+    for (int i=0;i<3;i++){
+        for (int j=0;j<3;j++){
+            double val = TT[i][j] * k_axial;
+            Ke[i][j] += val;
+            Ke[i][j+3] += -val;
+            Ke[i+3][j] += -val;
+            Ke[i+3][j+3] += val;
+        }
+    }
+
+    // Fill bending-like contribution using perp with same block pattern
+    for (int i=0;i<3;i++){
+        for (int j=0;j<3;j++){
+            double val = perp[i][j] * k_bend;
+            Ke[i][j] += val;
+            Ke[i][j+3] += -val;
+            Ke[i+3][j] += -val;
+            Ke[i+3][j+3] += val;
         }
     }
 }
 
+// ----------------------------
+// Make directory if not exists (POSIX)
+// ----------------------------
+static void make_dir_if_needed(const std::string &path) {
+    struct stat st;
+    if (stat(path.c_str(), &st) != 0) {
+        // try to create
+        mkdir(path.c_str(), 0755);
+    }
+}
+
+// ----------------------------
+// Main FEA solver
+// ----------------------------
 int main(int argc, char **argv) {
-    PetscInitialize(&argc, &argv, NULL, NULL);
-    MPI_Comm comm = PETSC_COMM_WORLD;
+    PetscErrorCode ierr;
+    ierr = PetscInitialize(&argc, &argv, (char*)NULL, (char*)NULL); CHKERRQ(ierr);
 
-    PetscPrintf(comm, "🔧 Running C++ PETSc FEA (nodes/elements expected in ../results)\n");
+    if (argc < 2) {
+        PetscPrintf(PETSC_COMM_WORLD, "Usage: %s <results_dir>\n", argv[0]);
+        PetscFinalize();
+        return 1;
+    }
+    std::string results_dir = argv[1];
+    std::string fea_dir = results_dir + "/fea_results";
+    make_dir_if_needed(fea_dir);
 
-    std::string nodes_path = "../results/nodes.csv";
-    std::string elems_path = "../results/elements.csv";
-    std::string out_dir = "../results/fea_results";
+    PetscPrintf(PETSC_COMM_WORLD, "🔧 Running FEA on geometry from %s\n", results_dir.c_str());
 
-    // read nodes/elements
-    auto nodes = read_nodes(nodes_path);
-    auto elems = read_elems(elems_path);
+    auto start = std::chrono::high_resolution_clock::now();
 
-    if (nodes.empty() || elems.empty()) {
-        PetscPrintf(comm, "Error: nodes or elements empty. Exiting.\n");
+    // Read nodes/elements
+    std::string nodes_file = results_dir + "/nodes.csv";
+    std::string elems_file = results_dir + "/elements.csv";
+    std::vector<Node> nodes;
+    std::vector<Elem> elems;
+    try {
+        nodes = read_nodes_csv(nodes_file);
+        elems = read_elems_csv(elems_file);
+    } catch (const std::exception &ex) {
+        PetscPrintf(PETSC_COMM_WORLD, "Error reading input CSVs: %s\n", ex.what());
         PetscFinalize();
         return 1;
     }
 
-    int n_nodes = (int)nodes.size();
-    int n_elems = (int)elems.size();
-    int n_dof = 3 * n_nodes;
+    const int n_nodes = (int)nodes.size();
+    const int n_elems = (int)elems.size();
+    const int n_dof = 3 * n_nodes;
 
-    // coords array for convenience
+    // Build coordinate array
     std::vector<std::array<double,3>> coords(n_nodes);
-    for (int i=0;i<n_nodes;++i) {
-        coords[i] = { nodes[i].x, nodes[i].y, nodes[i].z };
+    for (int i=0;i<n_nodes;i++){
+        coords[i][0] = nodes[i].x;
+        coords[i][1] = nodes[i].y;
+        coords[i][2] = nodes[i].z;
     }
 
-    // active flags
+    // Active flags
     std::vector<char> active(n_elems, 1);
 
-    // find y min/max for grips
+    // find y min/max and top/bot nodes within GRIP_LENGTH tolerance
     double y_min = coords[0][1], y_max = coords[0][1];
-    for (int i=1;i<n_nodes;++i) { y_min = std::min(y_min, coords[i][1]); y_max = std::max(y_max, coords[i][1]); }
-
-    // collect node ids (assumes node_id in CSV correspond to array index; if not, user should ensure)
-    std::vector<int> top_nodes, bot_nodes;
-    for (int i=0;i<n_nodes;++i) {
-        if (std::abs(coords[i][1] - y_max) < GRIP_LENGTH) top_nodes.push_back(i);
-        if (std::abs(coords[i][1] - y_min) < GRIP_LENGTH) bot_nodes.push_back(i);
+    for (int i=1;i<n_nodes;i++){
+        y_min = std::min(y_min, coords[i][1]);
+        y_max = std::max(y_max, coords[i][1]);
     }
-    PetscPrintf(comm, "Top nodes: %d, Bottom nodes: %d\n", (int)top_nodes.size(), (int)bot_nodes.size());
+    std::vector<int> top_nodes, bot_nodes;
+    for (int i=0;i<n_nodes;i++){
+        if (std::fabs(coords[i][1] - y_max) < GRIP_LENGTH) top_nodes.push_back(i);
+        if (std::fabs(coords[i][1] - y_min) < GRIP_LENGTH) bot_nodes.push_back(i);
+    }
+    PetscPrintf(PETSC_COMM_WORLD, "Top nodes: %zu, Bottom nodes: %zu\n", top_nodes.size(), bot_nodes.size());
 
-    // storage for time history
-    std::vector< std::vector<double> > stress_record; stress_record.reserve(N_STEPS);
-    std::vector< std::vector<int> > active_record; active_record.reserve(N_STEPS);
-    std::vector< std::vector<double> > disp_record; disp_record.reserve(N_STEPS);
-    std::vector<std::pair<double,double>> force_disp_curve; force_disp_curve.reserve(N_STEPS);
+    // Records for outputs
+    std::vector<std::vector<double>> stress_record; // each step: n_elems values
+    std::vector<std::vector<int>> active_record;    // each step: n_elems ints
+    std::vector<std::vector<double>> disp_record;   // each step: n_dof values
+    std::vector<std::array<double,2>> fd_curve;     // total_disp, total_force
 
-    // Prepare PETSc matrix (we'll recreate per step)
-    for (int step=0; step<N_STEPS; ++step) {
+    // Main step loop
+    for (int step=0; step < N_STEPS; ++step) {
         double disp_factor = (double)step / (double)(N_STEPS - 1);
         double dy_top = +DISPLACEMENT_MAX * disp_factor;
         double dy_bot = -DISPLACEMENT_MAX * disp_factor;
-        PetscPrintf(comm, "➡️  Step %d/%d | dy_top=%.6f, dy_bot=%.6f\n", step+1, N_STEPS, dy_top, dy_bot);
+        PetscPrintf(PETSC_COMM_WORLD, "➡️  Step %d/%d | dy_top=%.6f, dy_bot=%.6f\n", step+1, N_STEPS, dy_top, dy_bot);
 
-        // Create MAT (AIJ)
+        // Assemble global stiffness matrix K (PETSc Mat)
         Mat K;
-        MatCreate(comm, &K);
-        MatSetSizes(K, PETSC_DECIDE, PETSC_DECIDE, n_dof, n_dof);
-        MatSetFromOptions(K);
-        MatSetUp(K);
+        ierr = MatCreate(PETSC_COMM_WORLD, &K); CHKERRQ(ierr);
+        ierr = MatSetSizes(K, PETSC_DECIDE, PETSC_DECIDE, n_dof, n_dof); CHKERRQ(ierr);
+        ierr = MatSetFromOptions(K); CHKERRQ(ierr);
+        ierr = MatSetUp(K); CHKERRQ(ierr);
 
-        // Assemble element contributions
-        // For each active element compute Ke and insert into global K
-        for (int e=0;e<n_elems;++e) {
+        // Pre-estimate nonzero per row: each DOF connects to small number - leave default or set small
+        // Insert element contributions
+        for (int e=0;e<n_elems;e++){
             if (!active[e]) continue;
             int n1 = elems[e].n1;
             int n2 = elems[e].n2;
+            if (n1 < 0 || n1 >= n_nodes || n2 < 0 || n2 >= n_nodes) continue;
+
             double p1[3] = { coords[n1][0], coords[n1][1], coords[n1][2] };
             double p2[3] = { coords[n2][0], coords[n2][1], coords[n2][2] };
             double Ke[6][6];
             double L;
-            element_stiffness(p1,p2,Ke,L);
+            element_stiffness_6x6(p1, p2, Ke, L);
 
-            // global dof indices
-            PetscInt gdof[6];
-            for (int i=0;i<3;++i) gdof[i]   = 3*n1 + i;
-            for (int i=0;i<3;++i) gdof[i+3] = 3*n2 + i;
+            // Map local to global DOF indices
+            PetscInt dof_map[6];
+            for (int k=0;k<3;k++) { dof_map[k] = 3*n1 + k; dof_map[k+3] = 3*n2 + k; }
 
-            // Insert values
-            for (int i=0;i<6;++i) {
-                for (int j=0;j<6;++j) {
-                    MatSetValue(K, gdof[i], gdof[j], Ke[i][j], ADD_VALUES);
+            // Insert into K
+            for (int i=0;i<6;i++){
+                for (int j=0;j<6;j++){
+                    double val = Ke[i][j];
+                    ierr = MatSetValue(K, dof_map[i], dof_map[j], val, ADD_VALUES); CHKERRQ(ierr);
                 }
             }
         }
 
-        MatAssemblyBegin(K, MAT_FINAL_ASSEMBLY);
-        MatAssemblyEnd(K, MAT_FINAL_ASSEMBLY);
+        ierr = MatAssemblyBegin(K, MAT_FINAL_ASSEMBLY); CHKERRQ(ierr);
+        ierr = MatAssemblyEnd(K, MAT_FINAL_ASSEMBLY); CHKERRQ(ierr);
 
-        // Save a copy of original stiffness for reactions (K_full)
-        Mat K_full;
-        MatDuplicate(K, MAT_COPY_VALUES, &K_full);
+        // Keep a copy of original K for reaction computation later
+        Mat K_orig;
+        ierr = MatDuplicate(K, MAT_COPY_VALUES, &K_orig); CHKERRQ(ierr);
 
-        // Build RHS (initially zeros)
-        Vec b;
-        VecCreate(comm, &b);
-        VecSetSizes(b, PETSC_DECIDE, n_dof);
-        VecSetFromOptions(b);
-        VecSet(b, 0.0);
-
-        // Build known DOFs mapping
+        // Build known DOFs map
         std::vector<PetscInt> known_dofs;
         std::vector<double> known_vals;
-        known_dofs.reserve((top_nodes.size()+bot_nodes.size())*3);
-        known_vals.reserve((top_nodes.size()+bot_nodes.size())*3);
-
+        // Top nodes
         for (int n : top_nodes) {
             known_dofs.push_back(3*n + 0); known_vals.push_back(0.0);
             known_dofs.push_back(3*n + 1); known_vals.push_back(dy_top);
             known_dofs.push_back(3*n + 2); known_vals.push_back(0.0);
         }
+        // Bottom nodes
         for (int n : bot_nodes) {
             known_dofs.push_back(3*n + 0); known_vals.push_back(0.0);
             known_dofs.push_back(3*n + 1); known_vals.push_back(dy_bot);
             known_dofs.push_back(3*n + 2); known_vals.push_back(0.0);
         }
 
-        // Create PETSc Vec x_known containing known displacement values (for MatZeroRowsColumns)
-        Vec x_known;
-        VecCreate(comm, &x_known);
-        VecSetSizes(x_known, PETSC_DECIDE, n_dof);
-        VecSetFromOptions(x_known);
-        VecSet(x_known, 0.0);
+        // Make vector x with prescribed values at known DOFs for MatZeroRowsColumns
+        Vec x_prescribed, bvec;
+        ierr = VecCreate(PETSC_COMM_WORLD, &x_prescribed); CHKERRQ(ierr);
+        ierr = VecSetSizes(x_prescribed, PETSC_DECIDE, n_dof); CHKERRQ(ierr);
+        ierr = VecSetFromOptions(x_prescribed); CHKERRQ(ierr);
+        ierr = VecSet(x_prescribed, 0.0); CHKERRQ(ierr);
+
         for (size_t i=0;i<known_dofs.size();++i) {
-            VecSetValue(x_known, known_dofs[i], known_vals[i], INSERT_VALUES);
+            ierr = VecSetValue(x_prescribed, known_dofs[i], known_vals[i], INSERT_VALUES); CHKERRQ(ierr);
         }
-        VecAssemblyBegin(x_known); VecAssemblyEnd(x_known);
+        ierr = VecAssemblyBegin(x_prescribed); CHKERRQ(ierr);
+        ierr = VecAssemblyEnd(x_prescribed); CHKERRQ(ierr);
 
-        // Set b entries to zero initially then MatZeroRowsColumns will adjust b if x_known provided
-        // But we also want the solver to produce the prescribed displacements; call MatZeroRowsColumns on a duplicate K_mod
-        Mat K_mod;
-        MatDuplicate(K, MAT_COPY_VALUES, &K_mod);
+        // Prepare RHS vector b (initially zero)
+        ierr = VecCreate(PETSC_COMM_WORLD, &bvec); CHKERRQ(ierr);
+        ierr = VecSetSizes(bvec, PETSC_DECIDE, n_dof); CHKERRQ(ierr);
+        ierr = VecSetFromOptions(bvec); CHKERRQ(ierr);
+        ierr = VecSet(bvec, 0.0); CHKERRQ(ierr);
 
-        // Zero rows/cols and set diag to 1.0. Provide x_known and b so PETSc adjusts RHS properly.
-        PetscInt nknown = (PetscInt)known_dofs.size();
-        std::vector<PetscInt> known_arr = known_dofs;
-        MatZeroRowsColumns(K_mod, nknown, known_arr.data(), 1.0, x_known, b);
+        // Create IS for known dofs if any; else solve full system
+        IS is_known = NULL;
+        if (!known_dofs.empty()) {
+            ierr = ISCreateGeneral(PETSC_COMM_WORLD, (PetscInt)known_dofs.size(), known_dofs.data(), PETSC_COPY_VALUES, &is_known); CHKERRQ(ierr);
+            // Zero rows/cols of K and set diag=1.0 and adjust RHS with prescribed values via x_prescribed
+            ierr = MatZeroRowsColumnsIS(K, is_known, 1.0, x_prescribed, bvec); CHKERRQ(ierr);
+            // Note: MatZeroRowsColumns sets b[row] = diag * x[row] when x given.
+        }
 
-        // Build linear solver (KSP)
+        // Regularize tiny diagonal if needed (not necessary usually, but mirror python's tiny identity)
+        // Add very small to diagonal
+        for (int i=0;i<n_dof;i++) {
+            double tiny = 1e-12;
+            ierr = MatSetValue(K, i, i, tiny, ADD_VALUES); CHKERRQ(ierr);
+        }
+        ierr = MatAssemblyBegin(K, MAT_FINAL_ASSEMBLY); CHKERRQ(ierr);
+        ierr = MatAssemblyEnd(K, MAT_FINAL_ASSEMBLY); CHKERRQ(ierr);
+
+        // Solve K * U = b
         KSP ksp;
-        KSPCreate(comm, &ksp);
-        KSPSetOperators(ksp, K_mod, K_mod);
-        KSPSetFromOptions(ksp);
-        KSPSetUp(ksp);
-
-        // Solve K_mod * U = b
         Vec U;
-        VecDuplicate(b, &U);
-        KSPSolve(ksp, b, U);
+        ierr = KSPCreate(PETSC_COMM_WORLD, &ksp); CHKERRQ(ierr);
+        ierr = KSPSetOperators(ksp, K, K); CHKERRQ(ierr);
 
-        // Reaction forces: F_react = K_full * U
+        ierr = KSPSetType(ksp, KSPBICG); CHKERRQ(ierr);
+        PC pc;
+        ierr = KSPGetPC(ksp, &pc); CHKERRQ(ierr);
+        ierr = PCSetType(pc, PCILU); CHKERRQ(ierr);
+
+        ierr = KSPSetFromOptions(ksp); CHKERRQ(ierr);
+        ierr = KSPSetUp(ksp); CHKERRQ(ierr);
+
+        ierr = VecCreate(PETSC_COMM_WORLD, &U); CHKERRQ(ierr);
+        ierr = VecSetSizes(U, PETSC_DECIDE, n_dof); CHKERRQ(ierr);
+        ierr = VecSetFromOptions(U); CHKERRQ(ierr);
+        ierr = VecSet(U, 0.0); CHKERRQ(ierr);
+
+        ierr = KSPSolve(ksp, bvec, U); CHKERRQ(ierr);
+
+        // Check for convergence / singularity
+        KSPConvergedReason reason;
+        ierr = KSPGetConvergedReason(ksp, &reason); CHKERRQ(ierr);
+        if (reason < 0) {
+            PetscPrintf(PETSC_COMM_WORLD, "❌ Solver failed to converge at step %d. Reason %d\n", step+1, reason);
+            // free and break
+            if (is_known) ISDestroy(&is_known);
+            KSPDestroy(&ksp);
+            MatDestroy(&K); MatDestroy(&K_orig);
+            VecDestroy(&x_prescribed); VecDestroy(&bvec); VecDestroy(&U);
+            break;
+        }
+
+        PetscPrintf(PETSC_COMM_WORLD, "KSP converged reason: %d\n", reason);
+        KSPView(ksp, PETSC_VIEWER_STDOUT_WORLD);
+
+
+        // Compute reactions using original K_orig: F_react = K_orig * U
         Vec F_react;
-        VecDuplicate(b, &F_react);
-        MatMult(K_full, U, F_react);
+        ierr = VecDuplicate(U, &F_react); CHKERRQ(ierr);
+        ierr = MatMult(K_orig, U, F_react); CHKERRQ(ierr);
 
-        // Extract top reactions and sum
+        // Sum reaction forces at top nodes (y DOF)
         double total_force = 0.0;
         for (int n : top_nodes) {
-            PetscScalar val;
-            VecGetValues(F_react, 1, (PetscInt[]){3*n + 1}, &val);
+            PetscInt idx = 3*n + 1;
+            double val;
+            ierr = VecGetValues(F_react, 1, &idx, &val); CHKERRQ(ierr);
             total_force += val;
         }
         double total_disp = dy_top - dy_bot;
-        force_disp_curve.emplace_back(total_disp, total_force);
+        fd_curve.push_back({ total_disp, total_force });
 
-        // Extract U to host array
-        std::vector<double> Uhost(n_dof, 0.0);
-        for (int i=0;i<n_dof;++i) {
-            PetscScalar val;
-            VecGetValues(U, 1, (PetscInt[]){i}, &val);
-            Uhost[i] = val;
+        // Extract U into std::vector
+        std::vector<double> Uvals(n_dof);
+        for (int i=0;i<n_dof;i++){
+            double v;
+            ierr = VecGetValues(U, 1, (PetscInt*)&i, &v); CHKERRQ(ierr);
+            Uvals[i] = v;
         }
+        disp_record.push_back(Uvals);
 
-        // compute per-element stress and deactivate if needed
+        // Compute stresses and deactivate elements that exceed MAX_STRAIN
         std::vector<double> stress(n_elems, 0.0);
-        for (int e=0;e<n_elems;++e) {
+        for (int e=0;e<n_elems;e++){
             if (!active[e]) continue;
             int n1 = elems[e].n1;
             int n2 = elems[e].n2;
@@ -374,117 +394,144 @@ int main(int argc, char **argv) {
             double L = std::sqrt(Lvec[0]*Lvec[0] + Lvec[1]*Lvec[1] + Lvec[2]*Lvec[2]);
             if (L < 1e-12) L = 1e-12;
             double nvec[3] = { Lvec[0]/L, Lvec[1]/L, Lvec[2]/L };
-            double u1[3] = { Uhost[3*n1+0], Uhost[3*n1+1], Uhost[3*n1+2] };
-            double u2[3] = { Uhost[3*n2+0], Uhost[3*n2+1], Uhost[3*n2+2] };
+
+            double u1[3], u2[3];
+            for (int k=0;k<3;k++) { u1[k] = Uvals[3*n1 + k]; u2[k] = Uvals[3*n2 + k]; }
             double du[3] = { u2[0]-u1[0], u2[1]-u1[1], u2[2]-u1[2] };
             double strain = nvec[0]*du[0] + nvec[1]*du[1] + nvec[2]*du[2];
             strain /= L;
-            double s_ax = E_mod * strain;
-            stress[e] = s_ax;
-            if (std::abs(strain) > MAX_STRAIN) {
-                active[e] = 0; // deactivate
-            }
+            double stress_ax = E_mod * strain;
+            stress[e] = stress_ax;
+            if (std::fabs(strain) > MAX_STRAIN) active[e] = 0;
         }
 
-        // Save step history in memory
-        stress_record.emplace_back(stress.begin(), stress.end());
-        active_record.emplace_back();
-        active_record.back().reserve(n_elems);
-        for (int e=0;e<n_elems;++e) active_record.back().push_back(active[e] ? 1 : 0);
+        // Save records for this step
+        stress_record.emplace_back(stress);
+        std::vector<int> active_int(n_elems);
+        for (int i=0;i<n_elems;i++) active_int[i] = active[i] ? 1 : 0;
+        active_record.push_back(active_int);
 
-        disp_record.emplace_back(Uhost.begin(), Uhost.end());
-
-        // Clean up PETSc for this step
-        VecDestroy(&U);
-        VecDestroy(&F_react);
-        VecDestroy(&b);
-        VecDestroy(&x_known);
-        MatDestroy(&K_full);
-        MatDestroy(&K_mod);
+        // Clean up PETSc objects for this step
+        if (is_known) { ISDestroy(&is_known); is_known = NULL; }
+        MatDestroy(&K_orig);
         MatDestroy(&K);
+        VecDestroy(&x_prescribed);
+        VecDestroy(&bvec);
+        VecDestroy(&F_react);
         KSPDestroy(&ksp);
+        VecDestroy(&U);
 
-        // print early stop if nothing active
-        int n_active = 0;
-        for (int e=0;e<n_elems;++e) if (active[e]) ++n_active;
-        if (n_active == 0) {
-            PetscPrintf(comm, "⚠️  Simulation stopped early at step %d (no active elements)\n", step+1);
+        // stop early if no active elements remain
+        bool any_active = false;
+        for (int i=0;i<n_elems;i++) if (active[i]) { any_active = true; break; }
+        if (!any_active) {
+            PetscPrintf(PETSC_COMM_WORLD, "⚠️  Simulation stopped early at step %d.\n", step+1);
             break;
         }
-    } // end step loop
+    } // end steps
 
-    // Write outputs (CSV) to ../results/fea_results
-    // Create directory via system call (avoid filesystem). This is a portability hack:
-    system(("mkdir -p " + out_dir).c_str());
-
-    // stress_record.csv
-    {
-        std::ofstream fs(out_dir + "/stress_record.csv");
+    // ---- Save CSV outputs ----
+    // stress_record: rows = steps, cols = n_elems
+    if (!stress_record.empty()) {
+        std::string stress_csv = fea_dir + "/stress_record.csv";
+        std::ofstream sf(stress_csv);
         // header
-        for (int e=0;e<n_elems;++e) {
-            fs << "elem_" << e << ",";
+        for (int e=0;e<n_elems;e++){
+            if (e) sf << ",";
+            sf << "elem_" << e;
         }
-        fs << "step\n";
-        for (size_t s=0; s<stress_record.size(); ++s) {
-            for (int e=0;e<n_elems;++e) {
-                fs << stress_record[s][e] << ",";
+        sf << ",step\n";
+
+        for (size_t s=0;s<stress_record.size();++s){
+            const auto &row = stress_record[s];
+            for (int e=0;e<n_elems;e++){
+                if (e) sf << ",";
+                sf << std::setprecision(12) << row[e];
             }
-            fs << (s+1) << "\n";
+            sf << "," << (s+1) << "\n";
         }
-        fs.close();
+        sf.close();
     }
 
-    // active_elements.csv
-    {
-        std::ofstream fa(out_dir + "/active_elements.csv");
-        for (int e=0;e<n_elems;++e) fa << "elem_" << e << ",";
-        fa << "step\n";
-        for (size_t s=0; s<active_record.size(); ++s) {
-            for (int e=0;e<n_elems;++e) fa << active_record[s][e] << ",";
-            fa << (s+1) << "\n";
+    // active elements
+    if (!active_record.empty()) {
+        std::string active_csv = fea_dir + "/active_elements.csv";
+        std::ofstream af(active_csv);
+        for (int e=0;e<n_elems;e++){
+            if (e) af << ",";
+            af << "elem_" << e;
         }
-        fa.close();
+        af << ",step\n";
+        for (size_t s=0;s<active_record.size();++s){
+            const auto &row = active_record[s];
+            for (int e=0;e<n_elems;e++){
+                if (e) af << ",";
+                af << row[e];
+            }
+            af << "," << (s+1) << "\n";
+        }
+        af.close();
     }
 
-    // node_displacements.csv
-    {
-        std::ofstream fd(out_dir + "/node_displacements.csv");
-        // write header: node_0_x,... node_{n-1}_x, node_0_y,..., node_{n-1}_y, node_0_z...
-        for (int i=0;i<n_nodes;++i) fd << "node_"<<i<<"_x,";
-        for (int i=0;i<n_nodes;++i) fd << "node_"<<i<<"_y,";
-        for (int i=0;i<n_nodes;++i) fd << "node_"<<i<<"_z,";
-        fd << "step\n";
-
-        for (size_t s=0; s<disp_record.size(); ++s) {
-            // disp_record[s] is Uhost for this step of length n_dof (all dofs)
-            // write x for nodes 0..n-1
-            for (int i=0;i<n_nodes;++i) fd << disp_record[s][3*i + 0] << ",";
-            for (int i=0;i<n_nodes;++i) fd << disp_record[s][3*i + 1] << ",";
-            for (int i=0;i<n_nodes;++i) fd << disp_record[s][3*i + 2] << ",";
-            fd << (s+1) << "\n";
+    // displacements
+    if (!disp_record.empty()) {
+        std::string disp_csv = fea_dir + "/node_displacements.csv";
+        std::ofstream df(disp_csv);
+        // header: node_0_x,... node_n_z, step
+        for (int i=0;i<n_nodes;i++){
+            if (i) df << ",";
+            df << "node_" << i << "_x";
         }
-        fd.close();
+        for (int i=0;i<n_nodes;i++){
+            df << "," << "node_" << i << "_y";
+        }
+        for (int i=0;i<n_nodes;i++){
+            df << "," << "node_" << i << "_z";
+        }
+        df << ",step\n";
+
+        for (size_t s=0;s<disp_record.size();++s){
+            // disp_record[s] is length n_dof arranged as [node0_x,node0_y,node0_z,node1_x,...]
+            // But your Python output arranged differently: they used a concatenation then wrote columns differently.
+            // Here we'll output the same ordering we stored: 0..n_dof-1
+            const auto &row = disp_record[s];
+            for (int i=0;i<n_dof;i++){
+                if (i) df << ",";
+                df << std::setprecision(12) << row[i];
+            }
+            df << "," << (s+1) << "\n";
+        }
+        df.close();
     }
 
-    // force_displacement.csv
-    {
-        std::ofstream ff(out_dir + "/force_displacement.csv");
+    // force-displacement curve
+    if (!fd_curve.empty()) {
+        std::string fd_csv = fea_dir + "/force_displacement.csv";
+        std::ofstream ff(fd_csv);
         ff << "total_displacement,total_force\n";
-        for (auto &p : force_disp_curve) {
-            ff << p.first << "," << p.second << "\n";
+        for (const auto &p : fd_curve) {
+            ff << std::setprecision(12) << p[0] << "," << p[1] << "\n";
         }
         ff.close();
     }
 
-    // Write runtime (simple)
-    {
-        std::ofstream fr(out_dir + "/runtime.txt");
-        fr << "FEA run completed. Steps written: " << stress_record.size() << "\n";
-        fr.close();
-    }
+    // runtime output: not measuring exact time here to keep code simple; user can measure externally
+    std::string runtime_txt = fea_dir + "/runtime.txt";
+    std::ofstream rt(runtime_txt);
+    rt << "FEA run finished (no timing collected inside C++ version).\n";
+    rt.close();
 
-    PetscPrintf(comm, "✅ FEA completed. Results saved to %s\n", out_dir.c_str());
+    PetscPrintf(PETSC_COMM_WORLD, "✅ FEA completed. Results saved to %s\n", fea_dir.c_str());
 
-    PetscFinalize();
+        // Get the ending time point
+    auto stop = std::chrono::high_resolution_clock::now();
+
+    // Calculate the duration
+    auto duration = std::chrono::duration_cast<std::chrono::microseconds>(stop - start);
+
+    // Print the duration
+    std::cout << "Time taken by myLongRunningFunction: " << duration.count() << " microseconds" << std::endl;
+
+    ierr = PetscFinalize(); CHKERRQ(ierr);
     return 0;
 }

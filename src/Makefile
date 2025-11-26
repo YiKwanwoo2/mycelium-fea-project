@@ -12,10 +12,10 @@ FS_LIB     = -lstdc++fs
 
 
 # Output executable
-TARGET     = fea_petsc_solverAndPC.exe
+TARGET     = fea_petsc.exe
 
 # Source file
-SRC        = fea_petsc_solverAndPC.cpp
+SRC        = fea_petsc.cpp
 
 
 
