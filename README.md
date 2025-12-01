@@ -16,3 +16,5 @@ module load openmpi
 
 
 mpirun -np 4 ./fea_petsc /home/kwyi/ners570_project/mycelium-fea-project/results/sim_20251122_155110
+
+run mycelium_sim_2D.exe in src directory

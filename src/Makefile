@@ -12,10 +12,10 @@ FS_LIB     = -lstdc++fs
 
 
 # Output executable
-TARGET     = fea_petsc.exe
+TARGET     = fea_petsc_parallel.exe
 
 # Source file
-SRC        = fea_petsc.cpp
+SRC        = fea_petsc_parallel.cpp
 
 
 

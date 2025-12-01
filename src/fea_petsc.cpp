@@ -325,10 +325,10 @@ int main(int argc, char **argv) {
         ierr = KSPCreate(PETSC_COMM_WORLD, &ksp); CHKERRQ(ierr);
         ierr = KSPSetOperators(ksp, K, K); CHKERRQ(ierr);
 
-        ierr = KSPSetType(ksp, KSPBICG); CHKERRQ(ierr);
+        ierr = KSPSetType(ksp, KSPCG); CHKERRQ(ierr);
         PC pc;
         ierr = KSPGetPC(ksp, &pc); CHKERRQ(ierr);
-        ierr = PCSetType(pc, PCILU); CHKERRQ(ierr);
+        ierr = PCSetType(pc, PCICC); CHKERRQ(ierr);
 
         ierr = KSPSetFromOptions(ksp); CHKERRQ(ierr);
         ierr = KSPSetUp(ksp); CHKERRQ(ierr);
